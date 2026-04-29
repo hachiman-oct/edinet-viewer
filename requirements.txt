@@ -1,0 +1,8 @@
+streamlit
+google-cloud-bigquery
+requests
+beautifulsoup4
+lxml
+pandas
+python-dotenv
+plotly
