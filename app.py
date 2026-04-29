@@ -1,14 +1,9 @@
 import streamlit as st
-from google.cloud import bigquery
 import requests
 import zipfile
 import io
 import os
-from bs4 import BeautifulSoup
-import pandas as pd
-from google.oauth2 import service_account
 from dotenv import load_dotenv
-import plotly.express as px
 
 # Load environment variables from .env file
 load_dotenv()
@@ -32,6 +27,8 @@ st.markdown("""
 
 @st.cache_resource
 def get_bq_client():
+    from google.cloud import bigquery
+    from google.oauth2 import service_account
     # 1. Try Streamlit Secrets (Streamlit Cloud)
     try:
         if "gcp_service_account" in st.secrets:
@@ -51,6 +48,7 @@ def get_bq_client():
     return bigquery.Client()
 
 def search_documents(filer_name, period_end):
+    from google.cloud import bigquery
     client = get_bq_client()
     query = """
     SELECT doc_id, filer_name, period_end, submit_date_time, doc_description
@@ -133,6 +131,7 @@ def parse_num(val):
             return val
 
 def extract_xbrl_data(xbrl_content, lab_content):
+    from bs4 import BeautifulSoup
     logs = []
     if not xbrl_content or not lab_content:
         logs.append("Error: Missing XBRL or Label Linkbase content.")
@@ -375,6 +374,9 @@ if "search_results" in st.session_state:
                     # 2. Segment Details Display
                     st.header("📊 Segment Details")
                     if segment_details:
+                        import pandas as pd
+                        import plotly.express as px
+                        
                         res_df = pd.DataFrame(segment_details)
                         st.dataframe(res_df, use_container_width=True)
                         st.info("Note: Values are shown exactly as extracted from the XBRL. Empty values mean the tag was not found for that segment context.")
