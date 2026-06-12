@@ -5,21 +5,60 @@ Migrated from app.py (Streamlit) with logic preserved.
 
 import os
 import io
+import time
 import zipfile
+from collections import defaultdict
 from typing import Optional
 
 import requests as http_requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from taxonomy import COMPANY_TAGS, SEGMENT_TAGS
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (from backend/.env regardless of cwd)
+_env_path = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(_env_path)
+
+# EDINET API Key from environment
+EDINET_API_KEY = os.environ.get("EDINET_API_KEY", "")
+
+
+# ---------------------------------------------------------------------------
+# Rate Limiter (in-memory, per-IP sliding window)
+# ---------------------------------------------------------------------------
+
+RATE_LIMIT_MAX_REQUESTS = 5   # max requests per window
+RATE_LIMIT_WINDOW_SEC = 60     # sliding window in seconds
+
+# dict[ip_address] -> list of timestamps
+_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(client_ip: str) -> None:
+    """Raise 429 if the client has exceeded the rate limit."""
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW_SEC
+
+    # Prune old entries
+    timestamps = _rate_limit_store[client_ip]
+    _rate_limit_store[client_ip] = [t for t in timestamps if t > window_start]
+
+    if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Rate limit exceeded. Maximum {RATE_LIMIT_MAX_REQUESTS} "
+                f"analyze requests per {RATE_LIMIT_WINDOW_SEC} seconds. "
+                "Please wait and try again."
+            ),
+        )
+
+    _rate_limit_store[client_ip].append(now)
 
 app = FastAPI(
     title="EDINET XBRL Viewer API",
@@ -112,7 +151,10 @@ def search_documents(filer_name: Optional[str], period_end: Optional[str]):
 def download_and_extract_xbrl(doc_id: str, api_key: str):
     """Download ZIP from EDINET API and extract XBRL + label + definition content."""
     if not api_key:
-        raise HTTPException(status_code=400, detail="EDINET API Key is missing.")
+        raise HTTPException(
+            status_code=400,
+            detail="EDINET API Key is not configured. Set EDINET_API_KEY in your .env file.",
+        )
 
     url = (
         f"https://api.edinet-fsa.go.jp/api/v2/documents/{doc_id}"
@@ -456,7 +498,7 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
 
 class AnalyzeRequest(BaseModel):
     doc_id: str
-    api_key: str
+    api_key: Optional[str] = None  # Optional: uses server-side EDINET_API_KEY if omitted
 
 
 # ---------------------------------------------------------------------------
@@ -498,9 +540,16 @@ def api_search(
 
 
 @app.post("/api/analyze")
-def api_analyze(req: AnalyzeRequest):
+def api_analyze(req: AnalyzeRequest, request: Request):
     """Download XBRL from EDINET and extract company summary + segment details."""
-    xbrl_content, lab_content, def_content = download_and_extract_xbrl(req.doc_id, req.api_key)
+    # Rate limit check (per client IP)
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(client_ip)
+
+    # Resolve API key: request body > environment variable
+    api_key = req.api_key or EDINET_API_KEY
+
+    xbrl_content, lab_content, def_content = download_and_extract_xbrl(req.doc_id, api_key)
 
     if xbrl_content is None and lab_content is None:
         raise HTTPException(

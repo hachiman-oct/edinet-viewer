@@ -8,7 +8,6 @@ interface CompanySummaryProps {
   docId: string;
   filerName: string;
   periodEnd: string | null;
-  apiKey: string;
 }
 
 function formatMetricValue(key: string, val: string | number | null): string {
@@ -34,7 +33,6 @@ export default function CompanySummary({
   docId,
   filerName,
   periodEnd,
-  apiKey,
 }: CompanySummaryProps) {
   const periodStart = summary["Period Start (期首)"];
 
@@ -45,8 +43,6 @@ export default function CompanySummary({
 
   const htmlUrl = `https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?${docId}`;
   const pdfUrl = `https://disclosure2dl.edinet-fsa.go.jp/searchdocument/pdf/${docId}.pdf`;
-  const apiXbrlUrl = `https://api.edinet-fsa.go.jp/api/v2/documents/${docId}?type=1&Subscription-Key=${apiKey}`;
-  const apiCsvUrl = `https://api.edinet-fsa.go.jp/api/v2/documents/${docId}?type=5&Subscription-Key=${apiKey}`;
 
   return (
     <motion.div
@@ -92,8 +88,6 @@ export default function CompanySummary({
             {[
               { label: "HTML", href: htmlUrl, color: "indigo" },
               { label: "PDF", href: pdfUrl, color: "rose" },
-              { label: "XBRL (API)", href: apiXbrlUrl, color: "sky" },
-              { label: "CSV (API)", href: apiCsvUrl, color: "emerald" },
             ].map((link) => (
               <a
                 key={link.label}

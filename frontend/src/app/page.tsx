@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 
 import Header from "@/components/Header";
@@ -12,8 +13,33 @@ import PieCharts from "@/components/PieCharts";
 import { searchDocuments, analyzeDocument } from "@/lib/api";
 import type { SearchResult, AnalyzeResponse } from "@/types";
 
-export default function Home() {
-  const [apiKey, setApiKey] = useState("");
+// ---------------------------------------------------------------------------
+// URL query parameter helpers
+// ---------------------------------------------------------------------------
+
+function updateQueryParams(params: Record<string, string | null>) {
+  const url = new URL(window.location.href);
+  for (const [key, value] of Object.entries(params)) {
+    if (value) {
+      url.searchParams.set(key, value);
+    } else {
+      url.searchParams.delete(key);
+    }
+  }
+  window.history.replaceState({}, "", url.toString());
+}
+
+// ---------------------------------------------------------------------------
+// Inner component that uses useSearchParams (must be inside <Suspense>)
+// ---------------------------------------------------------------------------
+
+function HomeInner() {
+  const searchParams = useSearchParams();
+
+  // Read initial values from URL
+  const initialFilerName = searchParams.get("filer_name") || "";
+  const initialPeriodEnd = searchParams.get("period_end") || "";
+  const initialDocId = searchParams.get("doc_id") || null;
 
   // Search state
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -22,7 +48,9 @@ export default function Home() {
   const [hasSearched, setHasSearched] = useState(false);
 
   // Analyze state
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(
+    initialDocId
+  );
   const [analysisData, setAnalysisData] = useState<AnalyzeResponse | null>(
     null
   );
@@ -32,6 +60,20 @@ export default function Home() {
   // Logs
   const [showLogs, setShowLogs] = useState(false);
 
+  // Track whether we've already auto-triggered from URL params
+  const didAutoSearch = useRef(false);
+
+  // --- Auto-search on mount when URL has search params ---
+  useEffect(() => {
+    if (didAutoSearch.current) return;
+    if (initialFilerName || initialPeriodEnd) {
+      didAutoSearch.current = true;
+      handleSearch(initialFilerName, initialPeriodEnd);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // --- Search handler ---
   const handleSearch = useCallback(
     async (filerName: string, periodEnd: string) => {
       setSearchError(null);
@@ -39,6 +81,13 @@ export default function Home() {
       setAnalysisData(null);
       setSelectedDocId(null);
       setHasSearched(true);
+
+      // Update URL
+      updateQueryParams({
+        filer_name: filerName || null,
+        period_end: periodEnd || null,
+        doc_id: null, // Clear doc_id when starting a new search
+      });
 
       try {
         const data = await searchDocuments(filerName, periodEnd);
@@ -55,21 +104,26 @@ export default function Home() {
     []
   );
 
+  // --- Select document handler ---
+  const handleSelectDoc = useCallback((docId: string) => {
+    setSelectedDocId(docId);
+    // Update URL with selected doc_id
+    updateQueryParams({ doc_id: docId });
+  }, []);
+
+  // --- Analyze handler ---
   const handleAnalyze = useCallback(async () => {
     if (!selectedDocId) return;
-    if (!apiKey) {
-      setAnalyzeError(
-        "Please provide an EDINET API Key in the header before analyzing."
-      );
-      return;
-    }
 
     setAnalyzeError(null);
     setIsAnalyzing(true);
     setAnalysisData(null);
 
+    // Ensure doc_id is in URL
+    updateQueryParams({ doc_id: selectedDocId });
+
     try {
-      const data = await analyzeDocument(selectedDocId, apiKey);
+      const data = await analyzeDocument(selectedDocId);
       setAnalysisData(data);
     } catch (err) {
       setAnalyzeError(
@@ -78,7 +132,7 @@ export default function Home() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [selectedDocId, apiKey]);
+  }, [selectedDocId]);
 
   const selectedRow = searchResults.find((r) => r.doc_id === selectedDocId);
 
@@ -91,11 +145,16 @@ export default function Home() {
       </div>
 
       <div className="relative">
-        <Header apiKey={apiKey} onApiKeyChange={setApiKey} />
+        <Header />
 
         <main className="mx-auto max-w-7xl space-y-6 px-6 py-8">
           {/* Search Form */}
-          <SearchForm onSearch={handleSearch} isLoading={isSearching} />
+          <SearchForm
+            onSearch={handleSearch}
+            isLoading={isSearching}
+            initialFilerName={initialFilerName}
+            initialPeriodEnd={initialPeriodEnd}
+          />
 
           {/* Error Messages */}
           <AnimatePresence>
@@ -127,7 +186,7 @@ export default function Home() {
               <ResultsTable
                 results={searchResults}
                 selectedDocId={selectedDocId}
-                onSelect={setSelectedDocId}
+                onSelect={handleSelectDoc}
                 onAnalyze={handleAnalyze}
                 isAnalyzing={isAnalyzing}
               />
@@ -176,7 +235,6 @@ export default function Home() {
                   docId={selectedRow.doc_id}
                   filerName={selectedRow.filer_name}
                   periodEnd={selectedRow.period_end}
-                  apiKey={apiKey}
                 />
 
                 {/* Segment Details Table */}
@@ -233,5 +291,23 @@ export default function Home() {
         </footer>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page component (wraps HomeInner in Suspense for useSearchParams)
+// ---------------------------------------------------------------------------
+
+export default function Home() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center text-gray-500">
+          Loading…
+        </div>
+      }
+    >
+      <HomeInner />
+    </Suspense>
   );
 }

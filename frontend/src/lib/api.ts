@@ -19,13 +19,12 @@ export async function searchDocuments(
 }
 
 export async function analyzeDocument(
-  docId: string,
-  apiKey: string
+  docId: string
 ): Promise<AnalyzeResponse> {
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: docId, api_key: apiKey }),
+    body: JSON.stringify({ doc_id: docId }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

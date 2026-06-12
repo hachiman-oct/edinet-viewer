@@ -1,16 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 
 interface SearchFormProps {
   onSearch: (filerName: string, periodEnd: string) => void;
   isLoading: boolean;
+  initialFilerName?: string;
+  initialPeriodEnd?: string;
 }
 
-export default function SearchForm({ onSearch, isLoading }: SearchFormProps) {
-  const [filerName, setFilerName] = useState("");
-  const [periodEnd, setPeriodEnd] = useState("");
+export default function SearchForm({
+  onSearch,
+  isLoading,
+  initialFilerName = "",
+  initialPeriodEnd = "",
+}: SearchFormProps) {
+  const [filerName, setFilerName] = useState(initialFilerName);
+  const [periodEnd, setPeriodEnd] = useState(initialPeriodEnd);
+
+  // Sync with external initial values (from URL params)
+  useEffect(() => {
+    setFilerName(initialFilerName);
+  }, [initialFilerName]);
+  useEffect(() => {
+    setPeriodEnd(initialPeriodEnd);
+  }, [initialPeriodEnd]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

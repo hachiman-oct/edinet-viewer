@@ -1,9 +1,10 @@
-streamlit
+fastapi
+uvicorn[standard]
+pydantic
 google-cloud-bigquery
 requests
 beautifulsoup4
 lxml
 pandas
 python-dotenv
-plotly
 db-dtypes
