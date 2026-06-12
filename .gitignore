@@ -39,3 +39,11 @@ inbox/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Node.js / Next.js
+node_modules/
+.next/
+frontend/.env.local
+
+# Backend
+backend/.env
