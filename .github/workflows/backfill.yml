@@ -9,7 +9,7 @@ on:
       limit:
         description: 'Max documents to process'
         required: false
-        default: '200'
+        default: '40'
 
 jobs:
   backfill:
@@ -36,6 +36,6 @@ jobs:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
         run: |
           python batch_process.py \
-            --limit ${{ github.event.inputs.limit || '200' }} \
+            --limit ${{ github.event.inputs.limit || '40' }} \
             --order asc \
             --credentials-json '${{ secrets.GCP_SA_KEY }}'
