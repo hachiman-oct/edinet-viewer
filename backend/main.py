@@ -1,17 +1,23 @@
 """
-EDINET XBRL Viewer — FastAPI Backend
-Migrated from app.py (Streamlit) with logic preserved.
+EDINET XBRL Viewer — FastAPI Backend (v2)
+
+Architecture:
+  - BigQuery に企業マスタ・財務サマリ・セグメントデータを事前格納
+  - フロントエンドからはデータ参照のみ (リアルタイム XBRL ダウンロード不要)
+  - バッチエンドポイントで documents テーブルの未処理 doc_id を
+    XBRL ダウンロード → パース → 新テーブルに投入
 """
 
 import os
 import io
+import csv
 import time
 import zipfile
+import unicodedata
 from collections import defaultdict
 from typing import Optional
 
 import requests as http_requests
-import pandas as pd
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -26,6 +32,13 @@ load_dotenv(_env_path)
 
 # EDINET API Key from environment
 EDINET_API_KEY = os.environ.get("EDINET_API_KEY", "")
+
+# BigQuery table names
+BQ_DATASET = "edinet"
+BQ_DOCUMENTS = "documents"
+BQ_COMPANY_MASTER = "company_master"
+BQ_FINANCIAL_SUMMARY = "financial_summary"
+BQ_SEGMENT_DATA = "segment_data"
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +66,7 @@ def _check_rate_limit(client_ip: str) -> None:
             status_code=429,
             detail=(
                 f"Rate limit exceeded. Maximum {RATE_LIMIT_MAX_REQUESTS} "
-                f"analyze requests per {RATE_LIMIT_WINDOW_SEC} seconds. "
+                f"requests per {RATE_LIMIT_WINDOW_SEC} seconds. "
                 "Please wait and try again."
             ),
         )
@@ -62,8 +75,8 @@ def _check_rate_limit(client_ip: str) -> None:
 
 app = FastAPI(
     title="EDINET XBRL Viewer API",
-    description="Search EDINET filings via BigQuery, download XBRL, and extract company & segment data.",
-    version="1.0.0",
+    description="Search companies in BigQuery, view financial summaries and segment data.",
+    version="2.0.0",
 )
 
 # --- CORS Middleware ---
@@ -114,38 +127,14 @@ def get_bq_client():
     return _bq_client
 
 
+def _get_project_id() -> str:
+    """Get the project ID from the BigQuery client."""
+    return get_bq_client().project
+
+
 # ---------------------------------------------------------------------------
-# Data Functions (migrated from app.py — logic unchanged)
+# XBRL Processing Functions (from v1)
 # ---------------------------------------------------------------------------
-
-
-def search_documents(filer_name: Optional[str], period_end: Optional[str]):
-    """Search EDINET documents in BigQuery."""
-    from google.cloud import bigquery
-
-    client = get_bq_client()
-    query = """
-    SELECT doc_id, filer_name, period_end, submit_date_time, doc_description
-    FROM `edinet.documents`
-    WHERE 1=1
-    """
-    params = []
-    if filer_name:
-        query += " AND filer_name_normalized LIKE @filer_name"
-        params.append(
-            bigquery.ScalarQueryParameter("filer_name", "STRING", f"%{filer_name}%")
-        )
-    if period_end:
-        query += " AND period_end = @period_end"
-        params.append(
-            bigquery.ScalarQueryParameter("period_end", "DATE", period_end)
-        )
-
-    query += " ORDER BY submit_date_time DESC LIMIT 50"
-
-    job_config = bigquery.QueryJobConfig(query_parameters=params)
-    df = client.query(query, job_config=job_config).to_dataframe()
-    return df
 
 
 def download_and_extract_xbrl(doc_id: str, api_key: str):
@@ -253,12 +242,32 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
         return {}, [], logs
 
     try:
-        soup_xbrl = BeautifulSoup(xbrl_content, "xml")
+        import re
+        # Decode bytes to string
+        xbrl_str = xbrl_content.decode("utf-8") if isinstance(xbrl_content, bytes) else xbrl_content
+        # Remove TextBlock elements to speed up parsing and reduce memory
+        xbrl_str = re.sub(r'<([a-zA-Z0-9_:]*TextBlock)\b[^>]*>.*?</\1>', '', xbrl_str, flags=re.DOTALL)
+        xbrl_str = re.sub(r'<([a-zA-Z0-9_:]*TextBlock)\b[^>]*/>', '', xbrl_str)
+
+        soup_xbrl = BeautifulSoup(xbrl_str, "xml")
         soup_lab = BeautifulSoup(lab_content, "xml")
         logs.append("Successfully parsed XBRL and Label Linkbase XML.")
     except Exception as e:
         logs.append(f"Error parsing XML: {e}")
         return {}, [], logs
+
+    # Build facts index to optimize lookups (O(1) instead of O(N))
+    from collections import defaultdict
+    facts_by_tag = defaultdict(list)
+    for t in soup_xbrl.find_all(True):
+        t_name = t.name or ""
+        local_name = t_name.rsplit(":", 1)[-1]
+        facts_by_tag[local_name].append(t)
+        name_attr = t.get("name")
+        if name_attr:
+            name_local = name_attr.rsplit(":", 1)[-1]
+            if name_local != local_name:
+                facts_by_tag[name_local].append(t)
 
     # --- 1. Extract Company Summary ---
     logs.append("\n--- Extracting Company Summary ---")
@@ -270,17 +279,14 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
             "FilingDateInstant",
         ]
         for tag_name in tags:
-            for t in soup_xbrl.find_all(True):
-                t_name = t.name or ""
-                local_name = t_name.rsplit(":", 1)[-1]
-                if local_name == tag_name:
-                    ctx = t.get("contextRef", "")
-                    if ctx in valid_contexts:
-                        val = parse_num(t.text.strip())
-                        logs.append(
-                            f"  -> FOUND {metric_name} ({t_name}): {val} [Context: {ctx}]"
-                        )
-                        return val
+            for t in facts_by_tag.get(tag_name, []):
+                ctx = t.get("contextRef", "")
+                if ctx in valid_contexts:
+                    val = parse_num(t.text.strip())
+                    logs.append(
+                        f"  -> FOUND {metric_name} ({t.name}): {val} [Context: {ctx}]"
+                    )
+                    return val
         logs.append(
             f"  -> NO Data found for {metric_name}. Tried tags: {', '.join(tags)}"
         )
@@ -301,22 +307,25 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
         pbr_val = per_val * roe_val
 
     company_summary = {
-        "Period Start (期首)": period_start,
-        "Accounting Standards (会計基準)": get_first_text(
+        "period_start": period_start,
+        "accounting_standard": get_first_text(
             "Accounting Standards", COMPANY_TAGS["Accounting Standards"]
         ),
-        "Net Sales (売上高)": get_first_text(
+        "revenue": get_first_text(
             "Net Sales", COMPANY_TAGS["Net Sales"]
         ),
-        "Net Income (純利益)": get_first_text(
+        "net_income_loss": get_first_text(
             "Net Income", COMPANY_TAGS["Net Income"]
         ),
-        "Total Assets (総資産)": get_first_text(
+        "total_assets": get_first_text(
             "Total Assets", COMPANY_TAGS["Total Assets"]
         ),
-        "PER (株価収益率)": per_val,
-        "PBR (株価純資産倍率)": pbr_val,
-        "ROE (自己資本利益率)": roe_val,
+        "net_assets": get_first_text(
+            "Net Assets", COMPANY_TAGS["Net Assets"]
+        ),
+        "per": per_val,
+        "pbr": pbr_val,
+        "roe": roe_val,
     }
 
     # --- 2. Extract Segment Details ---
@@ -348,21 +357,14 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
         try:
             soup_def = BeautifulSoup(def_content, "xml")
 
-            # Build mapping: locator label → member name (from loc elements)
-            # loc elements look like:
-            #   <link:loc xlink:label="TotalMember" xlink:href="...#TotalMember" />
-            # The member name is the fragment after '#' in href
             loc_label_to_member: dict[str, str] = {}
             for loc in soup_def.find_all(["link:loc", "loc"]):
                 label = loc.get("xlink:label", "")
                 href = loc.get("xlink:href", "")
-                # Extract element name from href fragment (after '#')
                 if "#" in href:
                     member_name = href.split("#")[-1]
                     loc_label_to_member[label] = member_name
 
-            # Collect member names that appear as xlink:from in definitionArc
-            # These are parent/aggregate nodes and should be excluded
             from_members: set[str] = set()
             to_members: set[str] = set()
             for arc in soup_def.find_all(["link:definitionArc", "definitionArc"]):
@@ -373,16 +375,11 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
                 if to_label in loc_label_to_member:
                     to_members.add(loc_label_to_member[to_label])
 
-            # Leaf nodes = members that appear only in xlink:to, never in xlink:from
-            # (i.e. they have no children in the hierarchy)
             parent_member_names = from_members & to_members | (from_members - to_members)
             logs.append(f"def.xml: {len(loc_label_to_member)} locators, "
                         f"{len(from_members)} from-members, {len(to_members)} to-members, "
                         f"{len(parent_member_names)} parent members identified.")
 
-            # Filter: keep only segments whose full member key is NOT a parent
-            # full_text "jpcrp...:TotalMember" → replace ":" with "_" to match
-            # the href fragment format used in def.xml locators
             filtered = {}
             for seg_id, seg in unique_segments.items():
                 member_key = seg["full_text"].replace(":", "_")
@@ -458,16 +455,10 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
             segment_name = label_text
 
         def find_val(tags, ctx, is_name_attr=True):
-            for t in soup_xbrl.find_all(True):
-                if t.get("contextRef") != ctx:
-                    continue
-                name_attr = (t.get("name") or "").rsplit(":", 1)[-1]
-                t_local = (t.name or "").rsplit(":", 1)[-1]
-                if any(
-                    t_local == tg or (is_name_attr and name_attr == tg)
-                    for tg in tags
-                ):
-                    return parse_num(t.text.strip())
+            for tg in tags:
+                for t in facts_by_tag.get(tg, []):
+                    if t.get("contextRef") == ctx:
+                        return parse_num(t.text.strip())
             return None
 
         # Look up each segment metric defined in taxonomy
@@ -480,9 +471,10 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
             logs.append(f"  -> FOUND Data for {segment_name}")
             segment_details.append(
                 {
-                    "Segment ID": segment_id,
-                    "Segment Name": segment_name,
-                    **seg_values,
+                    "segment_name": segment_name,
+                    "segment_revenue": seg_values.get("Sales to External Customers (外部顧客への売上高)"),
+                    "segment_profit": seg_values.get("Segment Profit (セグメント利益)"),
+                    "segment_employees": seg_values.get("Employees (連結従業員数)"),
                 }
             )
         else:
@@ -496,8 +488,8 @@ def extract_xbrl_data(xbrl_content, lab_content, def_content=None):
 # ---------------------------------------------------------------------------
 
 
-class AnalyzeRequest(BaseModel):
-    doc_id: str
+class BatchProcessRequest(BaseModel):
+    limit: int = 10  # max documents to process per batch call
     api_key: Optional[str] = None  # Optional: uses server-side EDINET_API_KEY if omitted
 
 
@@ -508,70 +500,495 @@ class AnalyzeRequest(BaseModel):
 
 @app.get("/api/search")
 def api_search(
-    filer_name: Optional[str] = Query(None, description="企業名 (部分一致)"),
-    period_end: Optional[str] = Query(None, description="決算日 (YYYY-MM-DD)"),
+    q: str = Query(..., description="検索クエリ（企業名日英、銘柄コード、証券コード）"),
 ):
-    """Search EDINET documents in BigQuery."""
-    if not filer_name and not period_end:
-        raise HTTPException(
-            status_code=400,
-            detail="Please provide either filer_name or period_end to search.",
-        )
-    try:
-        df = search_documents(filer_name, period_end)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"BigQuery Error: {e}")
+    """Search companies in BigQuery company_master."""
+    from google.cloud import bigquery
 
-    # Convert DataFrame to list of dicts, handling date serialization
+    client = get_bq_client()
+    normalized_q = unicodedata.normalize("NFKC", q.strip())
+
+    # Search by ticker_symbol, edinet_code, or company name (ja/en)
+    query = f"""
+    SELECT
+        edinet_code, ticker_symbol, company_name_ja, company_name_en,
+        industry, jcn, latest_period_end
+    FROM `{BQ_DATASET}.{BQ_COMPANY_MASTER}`
+    WHERE
+        ticker_symbol = @q
+        OR edinet_code = @q
+        OR LOWER(company_name_ja) LIKE LOWER(@q_like)
+        OR LOWER(company_name_en) LIKE LOWER(@q_like)
+        OR company_name_ja LIKE @q_like
+    ORDER BY company_name_ja
+    LIMIT 50
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("q", "STRING", normalized_q),
+            bigquery.ScalarQueryParameter("q_like", "STRING", f"%{normalized_q}%"),
+        ]
+    )
+
+    df = client.query(query, job_config=job_config).to_dataframe()
+
     results = []
     for _, row in df.iterrows():
         results.append(
             {
-                "doc_id": row["doc_id"],
-                "filer_name": row["filer_name"],
-                "period_end": str(row["period_end"]) if row["period_end"] else None,
-                "submit_date_time": (
-                    str(row["submit_date_time"]) if row["submit_date_time"] else None
-                ),
-                "doc_description": row["doc_description"],
+                "edinet_code": row["edinet_code"],
+                "ticker_symbol": row.get("ticker_symbol"),
+                "company_name_ja": row.get("company_name_ja"),
+                "company_name_en": row.get("company_name_en"),
+                "industry": row.get("industry"),
+                "jcn": row.get("jcn"),
+                "latest_period_end": str(row["latest_period_end"]) if row.get("latest_period_end") else None,
             }
         )
     return {"results": results}
 
 
-@app.post("/api/analyze")
-def api_analyze(req: AnalyzeRequest, request: Request):
-    """Download XBRL from EDINET and extract company summary + segment details."""
-    # Rate limit check (per client IP)
+@app.get("/api/companies/{edinet_code}")
+def api_company_detail(edinet_code: str):
+    """Get company detail: master info + all financial summaries + segment data."""
+    from google.cloud import bigquery
+    import pandas as pd
+
+    client = get_bq_client()
+
+    # 1. Company master info
+    master_query = f"""
+    SELECT *
+    FROM `{BQ_DATASET}.{BQ_COMPANY_MASTER}`
+    WHERE edinet_code = @code
+    LIMIT 1
+    """
+    master_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("code", "STRING", edinet_code),
+        ]
+    )
+    df_master = client.query(master_query, job_config=master_config).to_dataframe()
+
+    if df_master.empty:
+        raise HTTPException(status_code=404, detail=f"Company not found: {edinet_code}")
+
+    master = df_master.iloc[0]
+    company_info = {
+        "edinet_code": master["edinet_code"],
+        "ticker_symbol": master.get("ticker_symbol"),
+        "company_name_ja": master.get("company_name_ja"),
+        "company_name_en": master.get("company_name_en"),
+        "industry": master.get("industry"),
+        "jcn": master.get("jcn"),
+        "latest_period_end": str(master["latest_period_end"]) if pd.notnull(master.get("latest_period_end")) else None,
+    }
+
+    # 2. Financial summaries (time series)
+    fin_query = f"""
+    SELECT *
+    FROM `{BQ_DATASET}.{BQ_FINANCIAL_SUMMARY}`
+    WHERE edinet_code = @code
+    ORDER BY period_end DESC
+    """
+    fin_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("code", "STRING", edinet_code),
+        ]
+    )
+    df_fin = client.query(fin_query, job_config=fin_config).to_dataframe()
+
+    financials = []
+    for _, row in df_fin.iterrows():
+        financials.append(
+            {
+                "fiscal_year": int(row["fiscal_year"]) if pd.notnull(row.get("fiscal_year")) else None,
+                "period_start": str(row["period_start"]) if pd.notnull(row.get("period_start")) else None,
+                "period_end": str(row["period_end"]) if pd.notnull(row.get("period_end")) else None,
+                "doc_id": row.get("doc_id"),
+                "submit_date": str(row["submit_date"]) if pd.notnull(row.get("submit_date")) else None,
+                "accounting_standard": row.get("accounting_standard"),
+                "revenue": int(row["revenue"]) if pd.notnull(row.get("revenue")) else None,
+                "net_income_loss": int(row["net_income_loss"]) if pd.notnull(row.get("net_income_loss")) else None,
+                "total_assets": int(row["total_assets"]) if pd.notnull(row.get("total_assets")) else None,
+                "net_assets": int(row["net_assets"]) if pd.notnull(row.get("net_assets")) else None,
+                "roe": float(row["roe"]) if pd.notnull(row.get("roe")) else None,
+                "pbr": float(row["pbr"]) if pd.notnull(row.get("pbr")) else None,
+                "per": float(row["per"]) if pd.notnull(row.get("per")) else None,
+            }
+        )
+
+    # 3. Segment data (grouped by fiscal year)
+    seg_query = f"""
+    SELECT *
+    FROM `{BQ_DATASET}.{BQ_SEGMENT_DATA}`
+    WHERE edinet_code = @code
+    ORDER BY fiscal_year DESC, segment_name
+    """
+    seg_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("code", "STRING", edinet_code),
+        ]
+    )
+    df_seg = client.query(seg_query, job_config=seg_config).to_dataframe()
+
+    segments: dict[int, list] = {}
+    for _, row in df_seg.iterrows():
+        fy = int(row["fiscal_year"]) if pd.notnull(row.get("fiscal_year")) else 0
+        if fy not in segments:
+            segments[fy] = []
+        segments[fy].append(
+            {
+                "segment_name": row.get("segment_name"),
+                "segment_revenue": int(row["segment_revenue"]) if pd.notnull(row.get("segment_revenue")) else None,
+                "segment_profit": int(row["segment_profit"]) if pd.notnull(row.get("segment_profit")) else None,
+                "segment_employees": int(row["segment_employees"]) if pd.notnull(row.get("segment_employees")) else None,
+            }
+        )
+
+    return {
+        "company": company_info,
+        "financials": financials,
+        "segments": segments,
+    }
+
+
+@app.post("/api/batch/process")
+def api_batch_process(req: BatchProcessRequest, request: Request):
+    """
+    Batch process: find unprocessed documents in BigQuery,
+    download XBRL, parse, and insert into financial_summary + segment_data.
+    Also upsert company_master.
+    """
+    from google.cloud import bigquery
+    import pandas as pd
+
     client_ip = request.client.host if request.client else "unknown"
     _check_rate_limit(client_ip)
 
-    # Resolve API key: request body > environment variable
     api_key = req.api_key or EDINET_API_KEY
-
-    xbrl_content, lab_content, def_content = download_and_extract_xbrl(req.doc_id, api_key)
-
-    if xbrl_content is None and lab_content is None:
+    if not api_key:
         raise HTTPException(
-            status_code=422,
-            detail="Could not extract XBRL content from the downloaded package.",
+            status_code=400,
+            detail="EDINET API Key is required. Set EDINET_API_KEY in .env or pass api_key.",
         )
 
-    if not xbrl_content or not lab_content:
-        raise HTTPException(
-            status_code=422,
-            detail="Could not locate both the main XBRL file and the Label Linkbase XML file in the downloaded package.",
-        )
+    client = get_bq_client()
+    project_id = _get_project_id()
 
-    company_summary, segment_details, logs = extract_xbrl_data(
-        xbrl_content, lab_content, def_content
+    # 1. Find unprocessed documents
+    unprocessed_query = f"""
+    SELECT doc_id, edinet_code, sec_code, filer_name, jcn,
+           period_start, period_end, submit_date_time
+    FROM `{BQ_DATASET}.{BQ_DOCUMENTS}`
+    WHERE (is_processed IS NULL OR is_processed = FALSE)
+      AND edinet_code IS NOT NULL
+      AND edinet_code != ''
+    ORDER BY submit_date_time DESC
+    LIMIT @limit
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("limit", "INTEGER", req.limit),
+        ]
     )
+    df_docs = client.query(unprocessed_query, job_config=job_config).to_dataframe()
+
+    if df_docs.empty:
+        return {"processed": 0, "message": "No unprocessed documents found."}
+
+    processed_count = 0
+    errors = []
+
+    for _, doc_row in df_docs.iterrows():
+        doc_id = doc_row["doc_id"]
+        edinet_code = doc_row["edinet_code"]
+
+        try:
+            # 2. Download and parse XBRL
+            xbrl_content, lab_content, def_content = download_and_extract_xbrl(doc_id, api_key)
+
+            if not xbrl_content or not lab_content:
+                # Mark as processed even if no XBRL (to avoid retrying)
+                _mark_document_processed(client, project_id, doc_id)
+                processed_count += 1
+                continue
+
+            company_summary, segment_details, logs = extract_xbrl_data(
+                xbrl_content, lab_content, def_content
+            )
+
+            # 3. Determine fiscal year from period_end
+            period_end = doc_row.get("period_end")
+            fiscal_year = None
+            if pd.notnull(period_end):
+                fiscal_year = int(str(period_end)[:4])
+
+            # 4. Insert into financial_summary
+            fin_row = {
+                "edinet_code": edinet_code,
+                "fiscal_year": fiscal_year,
+                "period_start": str(doc_row["period_start"]) if pd.notnull(doc_row.get("period_start")) else None,
+                "period_end": str(period_end) if pd.notnull(period_end) else None,
+                "doc_id": doc_id,
+                "submit_date": str(doc_row["submit_date_time"]) if pd.notnull(doc_row.get("submit_date_time")) else None,
+                "accounting_standard": str(company_summary.get("accounting_standard")) if company_summary.get("accounting_standard") else None,
+                "revenue": company_summary.get("revenue"),
+                "net_income_loss": company_summary.get("net_income_loss"),
+                "total_assets": company_summary.get("total_assets"),
+                "net_assets": company_summary.get("net_assets"),
+                "roe": company_summary.get("roe"),
+                "pbr": company_summary.get("pbr"),
+                "per": company_summary.get("per"),
+            }
+            _insert_rows_load_job(client, project_id, BQ_FINANCIAL_SUMMARY, [fin_row])
+
+            # 5. Insert into segment_data
+            if segment_details:
+                seg_rows = []
+                for seg in segment_details:
+                    seg_rows.append({
+                        "edinet_code": edinet_code,
+                        "fiscal_year": fiscal_year,
+                        "doc_id": doc_id,
+                        "segment_name": seg["segment_name"],
+                        "segment_revenue": seg.get("segment_revenue"),
+                        "segment_profit": seg.get("segment_profit"),
+                        "segment_employees": seg.get("segment_employees"),
+                    })
+                _insert_rows_load_job(client, project_id, BQ_SEGMENT_DATA, seg_rows)
+
+            # 6. Upsert company_master
+            sec_code = doc_row.get("sec_code")
+            ticker_symbol = None
+            if sec_code and len(str(sec_code)) >= 4:
+                ticker_symbol = str(sec_code)[:4]
+
+            _upsert_company_master(
+                client, project_id, edinet_code,
+                company_name_ja=doc_row.get("filer_name"),
+                jcn=doc_row.get("jcn"),
+                latest_period_end=str(period_end) if pd.notnull(period_end) else None,
+            )
+
+            # 7. Mark as processed
+            _mark_document_processed(client, project_id, doc_id)
+            processed_count += 1
+
+            # Rate limit EDINET API calls
+            time.sleep(1)
+
+        except HTTPException:
+            errors.append({"doc_id": doc_id, "error": "XBRL download failed"})
+        except Exception as e:
+            errors.append({"doc_id": doc_id, "error": str(e)})
 
     return {
-        "company_summary": company_summary,
-        "segment_details": segment_details,
-        "logs": logs,
+        "processed": processed_count,
+        "errors": errors,
+        "total_found": len(df_docs),
     }
+
+
+@app.post("/api/import/edinet-codelist")
+async def api_import_edinet_codelist(request: Request):
+    """
+    Import EDINET code list CSV to populate company_master with
+    English names, ticker symbols, and industry.
+
+    The CSV should be the EDINET code list format with columns:
+    EDINETコード, 提出者種別, 上場区分, 連結の有無, 資本金, 決算日,
+    提出者名, 提出者名（英字）, 提出者名（ヨミ）, 所在地, 提出者業種,
+    証券コード, 提出者法人番号
+    """
+    from google.cloud import bigquery
+
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a CSV file using multipart/form-data.",
+        )
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    raw_bytes = await file.read()
+
+    # Try Shift-JIS first (EDINET CSV default), fallback to UTF-8
+    try:
+        text = raw_bytes.decode("cp932")
+    except UnicodeDecodeError:
+        text = raw_bytes.decode("utf-8")
+
+    lines = text.splitlines()
+    # EDINET CSV has a metadata header on the first row ("ダウンロード日：...")
+    if lines and "ダウンロード" in lines[0]:
+        lines = lines[1:]
+
+    reader = csv.DictReader(lines)
+
+    client = get_bq_client()
+    project_id = _get_project_id()
+    rows = []
+
+    for csv_row in reader:
+        edinet_code = csv_row.get("ＥＤＩＮＥＴコード", "").strip()
+        if not edinet_code:
+            continue
+
+        # 証券コード (5 digits) → 4 digits
+        sec_code_raw = csv_row.get("証券コード", "").strip()
+        ticker_symbol = None
+        if sec_code_raw and len(sec_code_raw) >= 4:
+            ticker_symbol = sec_code_raw[:4]
+
+        company_name_ja = csv_row.get("提出者名", "").strip() or None
+        company_name_en = csv_row.get("提出者名（英字）", "").strip() or None
+        industry = csv_row.get("提出者業種", "").strip() or None
+        jcn = csv_row.get("提出者法人番号", "").strip() or None
+
+        rows.append({
+            "edinet_code": edinet_code,
+            "ticker_symbol": ticker_symbol,
+            "company_name_ja": company_name_ja,
+            "company_name_en": company_name_en,
+            "industry": industry,
+            "jcn": jcn,
+            "last_modified": None,
+            "latest_period_end": None,
+        })
+
+    if not rows:
+        return {"imported": 0, "message": "No valid rows found in CSV."}
+
+    import json
+    
+    # 既存のデータを全削除するのではなく、MERGE文で更新（UPSERT）する
+    # ticker_symbol または company_name_en が異なる（または空の）場合のみ更新する
+    json_data = json.dumps(rows)
+    query = f"""
+    MERGE `{project_id}.{BQ_DATASET}.{BQ_COMPANY_MASTER}` T
+    USING (
+      SELECT 
+        JSON_VALUE(j, '$.edinet_code') AS edinet_code,
+        JSON_VALUE(j, '$.ticker_symbol') AS ticker_symbol,
+        JSON_VALUE(j, '$.company_name_ja') AS company_name_ja,
+        JSON_VALUE(j, '$.company_name_en') AS company_name_en,
+        JSON_VALUE(j, '$.industry') AS industry,
+        JSON_VALUE(j, '$.jcn') AS jcn
+      FROM UNNEST(JSON_QUERY_ARRAY(@json_str)) AS j
+    ) S
+    ON T.edinet_code = S.edinet_code
+    WHEN MATCHED AND (IFNULL(T.ticker_symbol, '') != IFNULL(S.ticker_symbol, '') 
+                      OR IFNULL(T.company_name_en, '') != IFNULL(S.company_name_en, '')) THEN
+      UPDATE SET 
+        ticker_symbol = S.ticker_symbol,
+        company_name_en = S.company_name_en,
+        industry = S.industry,
+        last_modified = CURRENT_TIMESTAMP()
+    """
+
+    try:
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("json_str", "STRING", json_data),
+            ]
+        )
+        client.query(query, job_config=job_config).result()
+    except Exception as e:
+        return {"error": str(e), "message": "Failed to execute MERGE query"}
+
+    return {"imported": len(rows), "message": "Merged successfully"}
+
+
+# ---------------------------------------------------------------------------
+# Helper Functions for BigQuery writes
+# ---------------------------------------------------------------------------
+
+
+def _insert_rows_load_job(client, project_id: str, table_id: str, rows: list[dict]):
+    """Insert rows into BigQuery using a Load Job (sandbox-compatible)."""
+    import json
+    from google.cloud import bigquery
+
+    if not rows:
+        return
+
+    ndjson = "\n".join(json.dumps(row) for row in rows)
+    ndjson_bytes = ndjson.encode("utf-8")
+
+    job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+    )
+
+    table_ref = f"{project_id}.{BQ_DATASET}.{table_id}"
+    load_job = client.load_table_from_file(
+        io.BytesIO(ndjson_bytes),
+        table_ref,
+        job_config=job_config,
+    )
+    load_job.result()  # Wait for completion
+
+
+def _mark_document_processed(client, project_id: str, doc_id: str):
+    """Mark a document as processed in the documents table."""
+    from google.cloud import bigquery
+
+    query = f"""
+    UPDATE `{project_id}.{BQ_DATASET}.{BQ_DOCUMENTS}`
+    SET is_processed = TRUE
+    WHERE doc_id = @doc_id
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("doc_id", "STRING", doc_id),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+
+
+def _upsert_company_master(client, project_id: str, edinet_code: str, **kwargs):
+    """Upsert a row in company_master using MERGE."""
+    from google.cloud import bigquery
+
+    # Build SET clause dynamically from non-None kwargs
+    set_parts = []
+    params = [bigquery.ScalarQueryParameter("edinet_code", "STRING", edinet_code)]
+
+    for key, value in kwargs.items():
+        if value is not None:
+            param_name = f"p_{key}"
+            set_parts.append(f"T.{key} = @{param_name}")
+
+            if key == "latest_period_end":
+                params.append(bigquery.ScalarQueryParameter(param_name, "DATE", value))
+            else:
+                params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
+
+    if not set_parts:
+        return
+
+    set_clause = ", ".join(set_parts)
+    now_clause = "T.last_modified = CURRENT_TIMESTAMP()"
+
+    query = f"""
+    MERGE `{project_id}.{BQ_DATASET}.{BQ_COMPANY_MASTER}` T
+    USING (SELECT @edinet_code AS edinet_code) S
+    ON T.edinet_code = S.edinet_code
+    WHEN MATCHED THEN
+        UPDATE SET {set_clause}, {now_clause}
+    WHEN NOT MATCHED THEN
+        INSERT (edinet_code, {', '.join(kwargs.keys())}, last_modified)
+        VALUES (@edinet_code, {', '.join('@p_' + k for k in kwargs.keys())}, CURRENT_TIMESTAMP())
+    """
+
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    client.query(query, job_config=job_config).result()
 
 
 @app.get("/health")

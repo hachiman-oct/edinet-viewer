@@ -1,0 +1,41 @@
+name: Backfill XBRL Processing
+
+on:
+  schedule:
+    # 2時間おき（UTC 0,2,4,6,8,10,12,14,16,18,20,22時）
+    - cron: '30 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max documents to process'
+        required: false
+        default: '200'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run batch process (oldest first)
+        working-directory: backend
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+        run: |
+          python batch_process.py \
+            --limit ${{ github.event.inputs.limit || '200' }} \
+            --order asc \
+            --credentials-json '${{ secrets.GCP_SA_KEY }}'

@@ -8,3 +8,4 @@ lxml
 pandas
 python-dotenv
 db-dtypes
+python-multipart

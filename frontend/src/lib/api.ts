@@ -1,14 +1,12 @@
-import type { SearchResponse, AnalyzeResponse } from "@/types";
+import type { SearchResponse, CompanyDetailResponse } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export async function searchDocuments(
-  filerName: string,
-  periodEnd: string
+export async function searchCompanies(
+  query: string
 ): Promise<SearchResponse> {
   const params = new URLSearchParams();
-  if (filerName) params.set("filer_name", filerName);
-  if (periodEnd) params.set("period_end", periodEnd);
+  params.set("q", query);
 
   const res = await fetch(`${API_BASE}/api/search?${params.toString()}`);
   if (!res.ok) {
@@ -18,17 +16,13 @@ export async function searchDocuments(
   return res.json();
 }
 
-export async function analyzeDocument(
-  docId: string
-): Promise<AnalyzeResponse> {
-  const res = await fetch(`${API_BASE}/api/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: docId }),
-  });
+export async function getCompanyDetail(
+  edinetCode: string
+): Promise<CompanyDetailResponse> {
+  const res = await fetch(`${API_BASE}/api/companies/${edinetCode}`);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Analysis failed (status ${res.status})`);
+    throw new Error(body.detail || `Failed to load company (status ${res.status})`);
   }
   return res.json();
 }

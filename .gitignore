@@ -27,6 +27,7 @@ xbrl/
 test/
 gas/
 inbox/
+backend/test_*.py
 
 # Streamlit
 .streamlit/secrets.toml

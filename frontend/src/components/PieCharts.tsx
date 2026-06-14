@@ -13,6 +13,7 @@ import type { SegmentDetail } from "@/types";
 
 interface PieChartsProps {
   segments: SegmentDetail[];
+  fiscalYear: number | null;
 }
 
 const COLORS = [
@@ -39,18 +40,21 @@ function buildChartData(
 ): ChartData[] {
   return segments
     .map((s) => ({
-      name: s["Segment Name"],
+      name: s.segment_name,
       value: accessor(s),
     }))
     .filter((d): d is ChartData => d.value !== null && d.value > 0);
 }
 
-function formatTooltipValue(value: number | string | Array<number | string> | undefined): string {
-  if (value === undefined || value === null) return "—";
-  if (typeof value === "number") return value.toLocaleString("ja-JP");
-  if (Array.isArray(value)) return value.map((v) => (typeof v === "number" ? v.toLocaleString("ja-JP") : String(v))).join(", ");
-  return String(value);
-}
+const tooltipContentStyle = {
+  background: "rgba(15, 21, 53, 0.95)",
+  border: "1px solid rgba(255,255,255,0.1)",
+  borderRadius: "12px",
+  padding: "10px 14px",
+  fontSize: "12px",
+  color: "#e5e7eb",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+};
 
 interface SinglePieProps {
   title: string;
@@ -65,7 +69,7 @@ function SinglePie({ title, emoji, data, delay }: SinglePieProps) {
       <div className="glass-card flex flex-col items-center justify-center p-6 text-center">
         <span className="text-2xl">{emoji}</span>
         <p className="mt-2 text-sm font-medium text-gray-300">{title}</p>
-        <p className="mt-1 text-xs text-gray-600">No positive data</p>
+        <p className="mt-1 text-xs text-gray-600">データなし</p>
       </div>
     );
   }
@@ -108,15 +112,7 @@ function SinglePie({ title, emoji, data, delay }: SinglePieProps) {
               if (typeof value === "number") return value.toLocaleString("ja-JP");
               return String(value ?? "—");
             }}
-            contentStyle={{
-              background: "rgba(15, 21, 53, 0.95)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "12px",
-              padding: "10px 14px",
-              fontSize: "12px",
-              color: "#e5e7eb",
-              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-            }}
+            contentStyle={tooltipContentStyle}
             itemStyle={{ color: "#e5e7eb" }}
           />
           <Legend
@@ -135,19 +131,10 @@ function SinglePie({ title, emoji, data, delay }: SinglePieProps) {
   );
 }
 
-export default function PieCharts({ segments }: PieChartsProps) {
-  const salesData = buildChartData(
-    segments,
-    (s) => s["Sales to External Customers (外部顧客への売上高)"]
-  );
-  const profitData = buildChartData(
-    segments,
-    (s) => s["Segment Profit (セグメント利益)"]
-  );
-  const empData = buildChartData(
-    segments,
-    (s) => s["Employees (連結従業員数)"]
-  );
+export default function PieCharts({ segments, fiscalYear }: PieChartsProps) {
+  const salesData = buildChartData(segments, (s) => s.segment_revenue);
+  const profitData = buildChartData(segments, (s) => s.segment_profit);
+  const empData = buildChartData(segments, (s) => s.segment_employees);
 
   return (
     <motion.div
@@ -158,25 +145,30 @@ export default function PieCharts({ segments }: PieChartsProps) {
       <div className="mb-4 flex items-center gap-2">
         <span className="text-lg">📈</span>
         <h2 className="text-base font-semibold text-gray-200">
-          Segment Breakdown
+          セグメント構成比
         </h2>
+        {fiscalYear && (
+          <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-xs text-gray-500">
+            {fiscalYear}年度
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <SinglePie
-          title="Sales (売上高)"
+          title="売上高"
           emoji="💰"
           data={salesData}
           delay={0.1}
         />
         <SinglePie
-          title="Profit (利益)"
+          title="利益"
           emoji="📈"
           data={profitData}
           delay={0.2}
         />
         <SinglePie
-          title="Employees (従業員数)"
+          title="従業員数"
           emoji="👥"
           data={empData}
           delay={0.3}

@@ -1,140 +1,24 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { AnimatePresence, motion } from "framer-motion";
+import { useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
 
 import Header from "@/components/Header";
-import SearchForm from "@/components/SearchForm";
-import ResultsTable from "@/components/ResultsTable";
-import CompanySummary from "@/components/CompanySummary";
-import SegmentDetails from "@/components/SegmentDetails";
-import PieCharts from "@/components/PieCharts";
-import { searchDocuments, analyzeDocument } from "@/lib/api";
-import type { SearchResult, AnalyzeResponse } from "@/types";
 
-// ---------------------------------------------------------------------------
-// URL query parameter helpers
-// ---------------------------------------------------------------------------
+export default function Home() {
+  const router = useRouter();
+  const [query, setQuery] = useState("");
 
-function updateQueryParams(params: Record<string, string | null>) {
-  const url = new URL(window.location.href);
-  for (const [key, value] of Object.entries(params)) {
-    if (value) {
-      url.searchParams.set(key, value);
-    } else {
-      url.searchParams.delete(key);
-    }
-  }
-  window.history.replaceState({}, "", url.toString());
-}
-
-// ---------------------------------------------------------------------------
-// Inner component that uses useSearchParams (must be inside <Suspense>)
-// ---------------------------------------------------------------------------
-
-function HomeInner() {
-  const searchParams = useSearchParams();
-
-  // Read initial values from URL
-  const initialFilerName = searchParams.get("filer_name") || "";
-  const initialPeriodEnd = searchParams.get("period_end") || "";
-  const initialDocId = searchParams.get("doc_id") || null;
-
-  // Search state
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [hasSearched, setHasSearched] = useState(false);
-
-  // Analyze state
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(
-    initialDocId
-  );
-  const [analysisData, setAnalysisData] = useState<AnalyzeResponse | null>(
-    null
-  );
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
-
-  // Logs
-  const [showLogs, setShowLogs] = useState(false);
-
-  // Track whether we've already auto-triggered from URL params
-  const didAutoSearch = useRef(false);
-
-  // --- Auto-search on mount when URL has search params ---
-  useEffect(() => {
-    if (didAutoSearch.current) return;
-    if (initialFilerName || initialPeriodEnd) {
-      didAutoSearch.current = true;
-      handleSearch(initialFilerName, initialPeriodEnd);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // --- Search handler ---
   const handleSearch = useCallback(
-    async (filerName: string, periodEnd: string) => {
-      setSearchError(null);
-      setIsSearching(true);
-      setAnalysisData(null);
-      setSelectedDocId(null);
-      setHasSearched(true);
-
-      // Update URL
-      updateQueryParams({
-        filer_name: filerName || null,
-        period_end: periodEnd || null,
-        doc_id: null, // Clear doc_id when starting a new search
-      });
-
-      try {
-        const data = await searchDocuments(filerName, periodEnd);
-        setSearchResults(data.results);
-      } catch (err) {
-        setSearchError(
-          err instanceof Error ? err.message : "An unexpected error occurred."
-        );
-        setSearchResults([]);
-      } finally {
-        setIsSearching(false);
-      }
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmed = query.trim();
+      if (!trimmed) return;
+      router.push(`/search?q=${encodeURIComponent(trimmed)}`);
     },
-    []
+    [query, router]
   );
-
-  // --- Select document handler ---
-  const handleSelectDoc = useCallback((docId: string) => {
-    setSelectedDocId(docId);
-    // Update URL with selected doc_id
-    updateQueryParams({ doc_id: docId });
-  }, []);
-
-  // --- Analyze handler ---
-  const handleAnalyze = useCallback(async () => {
-    if (!selectedDocId) return;
-
-    setAnalyzeError(null);
-    setIsAnalyzing(true);
-    setAnalysisData(null);
-
-    // Ensure doc_id is in URL
-    updateQueryParams({ doc_id: selectedDocId });
-
-    try {
-      const data = await analyzeDocument(selectedDocId);
-      setAnalysisData(data);
-    } catch (err) {
-      setAnalyzeError(
-        err instanceof Error ? err.message : "An unexpected error occurred."
-      );
-    } finally {
-      setIsAnalyzing(false);
-    }
-  }, [selectedDocId]);
-
-  const selectedRow = searchResults.find((r) => r.doc_id === selectedDocId);
 
   return (
     <div className="min-h-screen">
@@ -142,172 +26,141 @@ function HomeInner() {
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -left-[400px] -top-[400px] h-[800px] w-[800px] rounded-full bg-indigo-500/5 blur-3xl" />
         <div className="absolute -bottom-[300px] -right-[300px] h-[600px] w-[600px] rounded-full bg-sky-500/5 blur-3xl" />
+        <div className="absolute left-1/2 top-1/3 h-[500px] w-[500px] -translate-x-1/2 rounded-full bg-emerald-500/3 blur-3xl" />
       </div>
 
       <div className="relative">
         <Header />
 
-        <main className="mx-auto max-w-7xl space-y-6 px-6 py-8">
-          {/* Search Form */}
-          <SearchForm
-            onSearch={handleSearch}
-            isLoading={isSearching}
-            initialFilerName={initialFilerName}
-            initialPeriodEnd={initialPeriodEnd}
-          />
+        <main className="mx-auto max-w-4xl px-6">
+          {/* Hero Section */}
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.7 }}
+            className="flex flex-col items-center justify-center pb-16 pt-24"
+          >
+            {/* Icon */}
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ delay: 0.2, type: "spring", stiffness: 200 }}
+              className="mb-8 flex h-24 w-24 items-center justify-center rounded-3xl bg-gradient-to-br from-indigo-500/15 to-sky-500/15 text-5xl shadow-2xl shadow-indigo-500/10"
+            >
+              📊
+            </motion.div>
 
-          {/* Error Messages */}
-          <AnimatePresence>
-            {searchError && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="glass-card border-rose-500/20 bg-rose-500/5 p-4 text-sm text-rose-400"
-              >
-                ⚠️ {searchError}
-              </motion.div>
-            )}
-            {analyzeError && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="glass-card border-rose-500/20 bg-rose-500/5 p-4 text-sm text-rose-400"
-              >
-                ⚠️ {analyzeError}
-              </motion.div>
-            )}
-          </AnimatePresence>
+            {/* Title */}
+            <h2 className="mb-3 text-center text-3xl font-bold tracking-tight sm:text-4xl">
+              <span className="gradient-text">EDINET XBRL Viewer</span>
+            </h2>
+            <p className="mb-10 max-w-lg text-center text-base text-gray-400 leading-relaxed">
+              有価証券報告書のXBRLデータから企業の財務サマリとセグメント情報を
+              抽出・可視化するツールです。
+            </p>
 
-          {/* Search Results Table */}
-          <AnimatePresence>
-            {hasSearched && !isSearching && (
-              <ResultsTable
-                results={searchResults}
-                selectedDocId={selectedDocId}
-                onSelect={handleSelectDoc}
-                onAnalyze={handleAnalyze}
-                isAnalyzing={isAnalyzing}
-              />
-            )}
-          </AnimatePresence>
-
-          {/* Analysis Results */}
-          <AnimatePresence>
-            {analysisData && selectedRow && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="space-y-6"
-              >
-                {/* Debug Logs Toggle */}
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setShowLogs(!showLogs)}
-                    className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-200"
-                  >
-                    {showLogs ? "🔽" : "▶️"} Debug Logs (
-                    {analysisData.logs.length})
-                  </button>
-                </div>
-
-                <AnimatePresence>
-                  {showLogs && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden"
-                    >
-                      <pre className="glass-card max-h-[300px] overflow-auto p-4 text-[11px] leading-relaxed text-gray-500">
-                        {analysisData.logs.join("\n")}
-                      </pre>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {/* Company Summary */}
-                <CompanySummary
-                  summary={analysisData.company_summary}
-                  docId={selectedRow.doc_id}
-                  filerName={selectedRow.filer_name}
-                  periodEnd={selectedRow.period_end}
+            {/* Search Form */}
+            <motion.form
+              onSubmit={handleSearch}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.4, duration: 0.5 }}
+              className="w-full max-w-xl"
+            >
+              <div className="glass-card flex items-center gap-3 p-2 pr-2">
+                <span className="pl-3 text-lg text-gray-500">🔍</span>
+                <input
+                  id="home-search-input"
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="企業名・銘柄コード・EDINETコードで検索..."
+                  autoComplete="off"
+                  data-1p-ignore
+                  className="flex-1 bg-transparent px-1 py-3 text-base text-gray-100 placeholder-gray-500 outline-none"
                 />
+                <button
+                  type="submit"
+                  disabled={!query.trim()}
+                  className="btn-primary min-w-[100px] rounded-xl px-5 py-3"
+                >
+                  検索
+                </button>
+              </div>
+            </motion.form>
 
-                {/* Segment Details Table */}
-                <SegmentDetails segments={analysisData.segment_details} />
-
-                {/* Pie Charts */}
-                {analysisData.segment_details.length > 0 && (
-                  <PieCharts segments={analysisData.segment_details} />
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Empty State */}
-          {!hasSearched && (
+            {/* Quick Examples */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 0.3 }}
-              className="flex flex-col items-center justify-center py-20"
+              transition={{ delay: 0.7 }}
+              className="mt-6 flex flex-wrap items-center justify-center gap-2"
             >
-              <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/10 to-sky-500/10 text-4xl">
-                📊
-              </div>
-              <h2 className="mb-2 text-lg font-semibold text-gray-300">
-                EDINET XBRL Viewer
-              </h2>
-              <p className="max-w-md text-center text-sm text-gray-500">
-                Search for filings in BigQuery, download their XBRL data via
-                EDINET API, and extract company summary and segment details.
-              </p>
-              <div className="mt-6 flex gap-3">
-                {["BigQuery Search", "XBRL Download", "Segment Analysis"].map(
-                  (step, i) => (
-                    <div
-                      key={step}
-                      className="flex items-center gap-2 rounded-full bg-white/5 px-4 py-2 text-xs text-gray-400"
-                    >
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-500/20 text-[10px] font-bold text-indigo-400">
-                        {i + 1}
-                      </span>
-                      {step}
-                    </div>
-                  )
-                )}
-              </div>
+              <span className="text-xs text-gray-600">例:</span>
+              {["トヨタ", "7203", "ソニー", "E02529"].map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  onClick={() => {
+                    setQuery(example);
+                    router.push(`/search?q=${encodeURIComponent(example)}`);
+                  }}
+                  className="rounded-full bg-white/5 px-3 py-1 text-xs text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-200"
+                >
+                  {example}
+                </button>
+              ))}
             </motion.div>
-          )}
+          </motion.div>
+
+          {/* Feature Cards */}
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.8, duration: 0.6 }}
+            className="grid grid-cols-1 gap-4 pb-20 sm:grid-cols-3"
+          >
+            {[
+              {
+                icon: "🏢",
+                title: "企業検索",
+                desc: "企業名・銘柄コード・EDINETコードで上場企業を検索",
+              },
+              {
+                icon: "📈",
+                title: "財務サマリ",
+                desc: "売上高・純利益・総資産・ROE等の経営指標を時系列で確認",
+              },
+              {
+                icon: "🧩",
+                title: "セグメント分析",
+                desc: "事業セグメント別の売上・利益・従業員数を可視化",
+              },
+            ].map((feature, i) => (
+              <motion.div
+                key={feature.title}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.9 + i * 0.1 }}
+                className="glass-card glass-card-hover p-6"
+              >
+                <span className="mb-3 block text-2xl">{feature.icon}</span>
+                <h3 className="mb-1.5 text-sm font-semibold text-gray-200">
+                  {feature.title}
+                </h3>
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  {feature.desc}
+                </p>
+              </motion.div>
+            ))}
+          </motion.div>
         </main>
 
         {/* Footer */}
         <footer className="border-t border-white/5 py-6 text-center text-xs text-gray-600">
-          Powered by Next.js &amp; FastAPI | Data from EDINET API &amp; BigQuery
+          Powered by Next.js &amp; FastAPI | Data from EDINET
         </footer>
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page component (wraps HomeInner in Suspense for useSearchParams)
-// ---------------------------------------------------------------------------
-
-export default function Home() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center text-gray-500">
-          Loading…
-        </div>
-      }
-    >
-      <HomeInner />
-    </Suspense>
   );
 }

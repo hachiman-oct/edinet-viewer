@@ -70,6 +70,20 @@ COMPANY_TAGS: dict[str, list[str]] = {
         # 総資産額（US GAAP）、経営指標等
         "TotalAssetsUSGAAPSummaryOfBusinessResults",
     ],
+    "Net Assets": [
+        # 純資産額、経営指標等
+        "NetAssetsSummaryOfBusinessResults",
+        # 株主資本（IFRS）、経営指標等
+        "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+        # 株主資本合計（IFRS）、経営指標等
+        "EquityIFRSSummaryOfBusinessResults",
+        # 純資産額（JMIS）、経営指標等
+        "NetAssetsJMISSummaryOfBusinessResults",
+        # 純資産額（US GAAP）、経営指標等
+        "NetAssetsUSGAAPSummaryOfBusinessResults",
+        # 株主資本合計（US GAAP）、経営指標等
+        "EquityUSGAAPSummaryOfBusinessResults",
+    ],
     "PER": [
         # 株価収益率、経営指標等
         "PriceEarningsRatioSummaryOfBusinessResults",
