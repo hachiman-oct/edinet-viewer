@@ -58,13 +58,22 @@ RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 # ── BigQuery クライアント初期化 ────────────────────────────────
 def create_bq_client(credentials_json: str | None = None) -> bigquery.Client:
     """BigQuery クライアントを作成する。"""
-    if credentials_json:
-        info = json.loads(credentials_json)
+    cred_json = (
+        credentials_json
+        or os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        or os.environ.get("GCP_CREDENTIALS_JSON")
+    )
+    if cred_json:
+        info = json.loads(cred_json)
         credentials = service_account.Credentials.from_service_account_info(info)
         return bigquery.Client(credentials=credentials, project=credentials.project_id)
 
-    # ローカル実行時: credentials.json ファイルを探す
+    # ローカル実行時: credentials.json ファイルまたは JSON 文字列を探す
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
+    if cred_path.strip().startswith("{"):
+        info = json.loads(cred_path)
+        credentials = service_account.Credentials.from_service_account_info(info)
+        return bigquery.Client(credentials=credentials, project=credentials.project_id)
     if not os.path.exists(cred_path):
         alt_path = os.path.join(os.path.dirname(__file__), "..", "credentials.json")
         if os.path.exists(alt_path):
@@ -181,20 +190,24 @@ def mark_document_processed(client: bigquery.Client, project_id: str, doc_id: st
 
 def upsert_company_master(client: bigquery.Client, project_id: str, edinet_code: str, **kwargs):
     """company_master に MERGE (UPSERT) する。"""
+    import pandas as pd
+
+    clean_kwargs = {
+        k: v for k, v in kwargs.items() if v is not None and pd.notnull(v)
+    }
+    if not clean_kwargs:
+        return
+
     set_parts = []
     params = [bigquery.ScalarQueryParameter("edinet_code", "STRING", edinet_code)]
 
-    for key, value in kwargs.items():
-        if value is not None:
-            param_name = f"p_{key}"
-            set_parts.append(f"T.{key} = @{param_name}")
-            if key == "latest_period_end":
-                params.append(bigquery.ScalarQueryParameter(param_name, "DATE", value))
-            else:
-                params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
-
-    if not set_parts:
-        return
+    for key, value in clean_kwargs.items():
+        param_name = f"p_{key}"
+        set_parts.append(f"T.{key} = @{param_name}")
+        if key == "latest_period_end":
+            params.append(bigquery.ScalarQueryParameter(param_name, "DATE", value))
+        else:
+            params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
 
     set_clause = ", ".join(set_parts)
     now_clause = "T.last_modified = CURRENT_TIMESTAMP()"
@@ -206,8 +219,8 @@ def upsert_company_master(client: bigquery.Client, project_id: str, edinet_code:
     WHEN MATCHED THEN
         UPDATE SET {set_clause}, {now_clause}
     WHEN NOT MATCHED THEN
-        INSERT (edinet_code, {', '.join(kwargs.keys())}, last_modified)
-        VALUES (@edinet_code, {', '.join('@p_' + k for k in kwargs.keys())}, CURRENT_TIMESTAMP())
+        INSERT (edinet_code, {', '.join(clean_kwargs.keys())}, last_modified)
+        VALUES (@edinet_code, {', '.join('@p_' + k for k in clean_kwargs.keys())}, CURRENT_TIMESTAMP())
     """
     job_config = bigquery.QueryJobConfig(query_parameters=params)
     client.query(query, job_config=job_config).result()

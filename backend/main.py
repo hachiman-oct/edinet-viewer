@@ -11,6 +11,7 @@ Architecture:
 import os
 import io
 import csv
+import json
 import time
 import zipfile
 import unicodedata
@@ -107,13 +108,35 @@ def get_bq_client():
     from google.cloud import bigquery
     from google.oauth2 import service_account
 
-    # 1. Try local credentials.json (relative to backend/)
+    # 1. Try JSON string from environment variable (e.g. injected via 1Password CLI `op run`)
+    cred_json = os.environ.get("GOOGLE_CREDENTIALS_JSON") or os.environ.get("GCP_CREDENTIALS_JSON")
+    if cred_json:
+        info = json.loads(cred_json)
+        credentials = service_account.Credentials.from_service_account_info(info)
+        _bq_client = bigquery.Client(
+            credentials=credentials, project=credentials.project_id
+        )
+        return _bq_client
+
+    # 2. Try local credentials.json (relative to backend/ or direct JSON via GOOGLE_APPLICATION_CREDENTIALS)
     cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
-    # Also check one level up (project root) for backward compat
+    if cred_path.strip().startswith("{"):
+        info = json.loads(cred_path)
+        credentials = service_account.Credentials.from_service_account_info(info)
+        _bq_client = bigquery.Client(
+            credentials=credentials, project=credentials.project_id
+        )
+        return _bq_client
+
+    # Also check relative to backend/ and project root for backward compat
     if not os.path.exists(cred_path):
-        alt_path = os.path.join(os.path.dirname(__file__), "..", "credentials.json")
-        if os.path.exists(alt_path):
-            cred_path = alt_path
+        for candidate in [
+            os.path.join(os.path.dirname(__file__), cred_path),
+            os.path.join(os.path.dirname(__file__), "..", "credentials.json"),
+        ]:
+            if os.path.exists(candidate):
+                cred_path = candidate
+                break
 
     if os.path.exists(cred_path):
         credentials = service_account.Credentials.from_service_account_file(cred_path)
@@ -122,7 +145,7 @@ def get_bq_client():
         )
         return _bq_client
 
-    # 2. Fallback to default (e.g. GOOGLE_APPLICATION_CREDENTIALS env var)
+    # 3. Fallback to default (e.g. gcloud auth application-default login)
     _bq_client = bigquery.Client()
     return _bq_client
 
@@ -498,6 +521,15 @@ class BatchProcessRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _str_or_none(val) -> Optional[str]:
+    """Convert a DataFrame cell value to str, returning None for None/NaN/NaT/pd.NA."""
+    import pandas as pd
+
+    if val is None or not pd.notnull(val):
+        return None
+    return str(val)
+
+
 @app.get("/api/search")
 def api_search(
     q: str = Query(..., description="検索クエリ（企業名日英、銘柄コード、証券コード）"),
@@ -537,13 +569,13 @@ def api_search(
     for _, row in df.iterrows():
         results.append(
             {
-                "edinet_code": row["edinet_code"],
-                "ticker_symbol": row.get("ticker_symbol"),
-                "company_name_ja": row.get("company_name_ja"),
-                "company_name_en": row.get("company_name_en"),
-                "industry": row.get("industry"),
-                "jcn": row.get("jcn"),
-                "latest_period_end": str(row["latest_period_end"]) if row.get("latest_period_end") else None,
+                "edinet_code": _str_or_none(row.get("edinet_code")),
+                "ticker_symbol": _str_or_none(row.get("ticker_symbol")),
+                "company_name_ja": _str_or_none(row.get("company_name_ja")),
+                "company_name_en": _str_or_none(row.get("company_name_en")),
+                "industry": _str_or_none(row.get("industry")),
+                "jcn": _str_or_none(row.get("jcn")),
+                "latest_period_end": _str_or_none(row.get("latest_period_end")),
             }
         )
     return {"results": results}
@@ -576,13 +608,13 @@ def api_company_detail(edinet_code: str):
 
     master = df_master.iloc[0]
     company_info = {
-        "edinet_code": master["edinet_code"],
-        "ticker_symbol": master.get("ticker_symbol"),
-        "company_name_ja": master.get("company_name_ja"),
-        "company_name_en": master.get("company_name_en"),
-        "industry": master.get("industry"),
-        "jcn": master.get("jcn"),
-        "latest_period_end": str(master["latest_period_end"]) if pd.notnull(master.get("latest_period_end")) else None,
+        "edinet_code": _str_or_none(master.get("edinet_code")),
+        "ticker_symbol": _str_or_none(master.get("ticker_symbol")),
+        "company_name_ja": _str_or_none(master.get("company_name_ja")),
+        "company_name_en": _str_or_none(master.get("company_name_en")),
+        "industry": _str_or_none(master.get("industry")),
+        "jcn": _str_or_none(master.get("jcn")),
+        "latest_period_end": _str_or_none(master.get("latest_period_end")),
     }
 
     # 2. Financial summaries (time series)
@@ -604,11 +636,11 @@ def api_company_detail(edinet_code: str):
         financials.append(
             {
                 "fiscal_year": int(row["fiscal_year"]) if pd.notnull(row.get("fiscal_year")) else None,
-                "period_start": str(row["period_start"]) if pd.notnull(row.get("period_start")) else None,
-                "period_end": str(row["period_end"]) if pd.notnull(row.get("period_end")) else None,
-                "doc_id": row.get("doc_id"),
-                "submit_date": str(row["submit_date"]) if pd.notnull(row.get("submit_date")) else None,
-                "accounting_standard": row.get("accounting_standard"),
+                "period_start": _str_or_none(row.get("period_start")),
+                "period_end": _str_or_none(row.get("period_end")),
+                "doc_id": _str_or_none(row.get("doc_id")),
+                "submit_date": _str_or_none(row.get("submit_date")),
+                "accounting_standard": _str_or_none(row.get("accounting_standard")),
                 "revenue": int(row["revenue"]) if pd.notnull(row.get("revenue")) else None,
                 "net_income_loss": int(row["net_income_loss"]) if pd.notnull(row.get("net_income_loss")) else None,
                 "total_assets": int(row["total_assets"]) if pd.notnull(row.get("total_assets")) else None,
@@ -640,7 +672,7 @@ def api_company_detail(edinet_code: str):
             segments[fy] = []
         segments[fy].append(
             {
-                "segment_name": row.get("segment_name"),
+                "segment_name": _str_or_none(row.get("segment_name")),
                 "segment_revenue": int(row["segment_revenue"]) if pd.notnull(row.get("segment_revenue")) else None,
                 "segment_profit": int(row["segment_profit"]) if pd.notnull(row.get("segment_profit")) else None,
                 "segment_employees": int(row["segment_employees"]) if pd.notnull(row.get("segment_employees")) else None,
@@ -955,23 +987,27 @@ def _mark_document_processed(client, project_id: str, doc_id: str):
 def _upsert_company_master(client, project_id: str, edinet_code: str, **kwargs):
     """Upsert a row in company_master using MERGE."""
     from google.cloud import bigquery
+    import pandas as pd
 
-    # Build SET clause dynamically from non-None kwargs
+    # Filter out None and NaN/NaT values
+    clean_kwargs = {
+        k: v for k, v in kwargs.items() if v is not None and pd.notnull(v)
+    }
+    if not clean_kwargs:
+        return
+
+    # Build SET clause dynamically from non-null kwargs
     set_parts = []
     params = [bigquery.ScalarQueryParameter("edinet_code", "STRING", edinet_code)]
 
-    for key, value in kwargs.items():
-        if value is not None:
-            param_name = f"p_{key}"
-            set_parts.append(f"T.{key} = @{param_name}")
+    for key, value in clean_kwargs.items():
+        param_name = f"p_{key}"
+        set_parts.append(f"T.{key} = @{param_name}")
 
-            if key == "latest_period_end":
-                params.append(bigquery.ScalarQueryParameter(param_name, "DATE", value))
-            else:
-                params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
-
-    if not set_parts:
-        return
+        if key == "latest_period_end":
+            params.append(bigquery.ScalarQueryParameter(param_name, "DATE", value))
+        else:
+            params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
 
     set_clause = ", ".join(set_parts)
     now_clause = "T.last_modified = CURRENT_TIMESTAMP()"
@@ -983,8 +1019,8 @@ def _upsert_company_master(client, project_id: str, edinet_code: str, **kwargs):
     WHEN MATCHED THEN
         UPDATE SET {set_clause}, {now_clause}
     WHEN NOT MATCHED THEN
-        INSERT (edinet_code, {', '.join(kwargs.keys())}, last_modified)
-        VALUES (@edinet_code, {', '.join('@p_' + k for k in kwargs.keys())}, CURRENT_TIMESTAMP())
+        INSERT (edinet_code, {', '.join(clean_kwargs.keys())}, last_modified)
+        VALUES (@edinet_code, {', '.join('@p_' + k for k in clean_kwargs.keys())}, CURRENT_TIMESTAMP())
     """
 
     job_config = bigquery.QueryJobConfig(query_parameters=params)
