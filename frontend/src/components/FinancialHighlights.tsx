@@ -2,42 +2,118 @@
 
 import { motion } from "framer-motion";
 import type { FinancialSummary } from "@/types";
+import {
+  formatMillionYen,
+  formatPercent,
+  formatRatio,
+} from "@/lib/format";
 
 interface FinancialHighlightsProps {
   financial: FinancialSummary;
+  previousFinancial?: FinancialSummary | null;
 }
 
-function formatValue(val: number | null | undefined): string {
-  if (val === null || val === undefined) return "N/A";
-  // Display in 百万円 (million yen)
-  if (Math.abs(val) >= 1_000_000) {
-    return `${(val / 1_000_000).toLocaleString("ja-JP", { maximumFractionDigits: 0 })}百万`;
+interface YoYBadge {
+  text: string;
+  tone: "positive" | "negative" | "neutral";
+}
+
+function getYoYBadge(
+  key: keyof FinancialSummary,
+  current: number | null | undefined,
+  prev: number | null | undefined
+): YoYBadge | null {
+  if (
+    current === null ||
+    current === undefined ||
+    prev === null ||
+    prev === undefined
+  ) {
+    return null;
   }
-  return val.toLocaleString("ja-JP");
-}
 
-function formatPercent(val: number | null | undefined): string {
-  if (val === null || val === undefined) return "N/A";
-  return `${(val * 100).toFixed(2)}%`;
-}
+  // ROE: percentage point difference
+  if (key === "roe") {
+    const diffPt = (current - prev) * 100;
+    const sign = diffPt > 0 ? "+" : "";
+    return {
+      text: `${sign}${diffPt.toFixed(2)}pt YoY`,
+      tone: diffPt > 0 ? "positive" : diffPt < 0 ? "negative" : "neutral",
+    };
+  }
 
-function formatRatio(val: number | null | undefined): string {
-  if (val === null || val === undefined) return "N/A";
-  return val.toFixed(2);
+  // PER / PBR: skip YoY badge (valuation multiples)
+  if (key === "per" || key === "pbr") {
+    return null;
+  }
+
+  // Monetary metrics (revenue, net_income_loss, total_assets, net_assets)
+  if (prev < 0 && current > 0) {
+    return { text: "黒字転換", tone: "positive" };
+  }
+  if (prev > 0 && current < 0) {
+    return { text: "赤字転落", tone: "negative" };
+  }
+  if (prev <= 0) {
+    return null;
+  }
+
+  const diffPct = ((current - prev) / prev) * 100;
+  const sign = diffPct > 0 ? "+" : "";
+  return {
+    text: `${sign}${diffPct.toFixed(1)}% YoY`,
+    tone: diffPct > 0 ? "positive" : diffPct < 0 ? "negative" : "neutral",
+  };
 }
 
 const metrics = [
-  { key: "revenue", label: "売上高", icon: "💰", format: formatValue },
-  { key: "net_income_loss", label: "純利益", icon: "📈", format: formatValue },
-  { key: "total_assets", label: "総資産", icon: "🏦", format: formatValue },
-  { key: "net_assets", label: "純資産", icon: "💎", format: formatValue },
-  { key: "roe", label: "ROE", icon: "🎯", format: formatPercent },
-  { key: "per", label: "PER", icon: "📊", format: formatRatio },
-  { key: "pbr", label: "PBR", icon: "📉", format: formatRatio },
+  {
+    key: "revenue",
+    label: "売上高",
+    icon: "💰",
+    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+  },
+  {
+    key: "net_income_loss",
+    label: "純利益",
+    icon: "📈",
+    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+  },
+  {
+    key: "total_assets",
+    label: "総資産",
+    icon: "🏦",
+    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+  },
+  {
+    key: "net_assets",
+    label: "純資産",
+    icon: "💎",
+    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+  },
+  {
+    key: "roe",
+    label: "ROE",
+    icon: "🎯",
+    format: (v: number | null | undefined) => formatPercent(v, "N/A"),
+  },
+  {
+    key: "per",
+    label: "PER",
+    icon: "📊",
+    format: (v: number | null | undefined) => formatRatio(v, "N/A"),
+  },
+  {
+    key: "pbr",
+    label: "PBR",
+    icon: "📉",
+    format: (v: number | null | undefined) => formatRatio(v, "N/A"),
+  },
 ] as const;
 
 export default function FinancialHighlights({
   financial,
+  previousFinancial,
 }: FinancialHighlightsProps) {
   return (
     <motion.div
@@ -46,7 +122,7 @@ export default function FinancialHighlights({
       transition={{ duration: 0.5, delay: 0.15 }}
       className="glass-card p-6"
     >
-      <div className="mb-5 flex items-center gap-2">
+      <div className="mb-5 flex flex-wrap items-center gap-2">
         <span className="text-lg">📋</span>
         <h2 className="text-base font-semibold text-gray-200">
           財務ハイライト
@@ -72,6 +148,17 @@ export default function FinancialHighlights({
           const val = financial[key as keyof FinancialSummary] as
             | number
             | null;
+          const prevVal = previousFinancial
+            ? (previousFinancial[key as keyof FinancialSummary] as
+                | number
+                | null)
+            : null;
+          const yoy = getYoYBadge(
+            key as keyof FinancialSummary,
+            val,
+            prevVal
+          );
+
           return (
             <motion.div
               key={key}
@@ -80,11 +167,26 @@ export default function FinancialHighlights({
               transition={{ delay: 0.1 + i * 0.05 }}
               className="glass-card glass-card-hover p-4"
             >
-              <div className="mb-1 flex items-center gap-1.5">
-                <span className="text-base">{icon}</span>
-                <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500">
-                  {label}
-                </p>
+              <div className="mb-1 flex items-center justify-between gap-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-base">{icon}</span>
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500">
+                    {label}
+                  </p>
+                </div>
+                {yoy && (
+                  <span
+                    className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-medium ${
+                      yoy.tone === "positive"
+                        ? "bg-emerald-400/10 text-emerald-400"
+                        : yoy.tone === "negative"
+                        ? "bg-rose-400/10 text-rose-400"
+                        : "bg-white/5 text-gray-400"
+                    }`}
+                  >
+                    {yoy.text}
+                  </span>
+                )}
               </div>
               <p className="text-lg font-bold text-white">{format(val)}</p>
             </motion.div>

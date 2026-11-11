@@ -12,13 +12,17 @@ import {
   Legend,
 } from "recharts";
 import type { FinancialSummary } from "@/types";
+import {
+  formatMillionYen,
+  formatMillionNumber,
+  formatPercent,
+  formatRatio,
+} from "@/lib/format";
 
 interface FinancialTimelineProps {
   financials: FinancialSummary[];
-}
-
-function formatMillions(val: number): string {
-  return `${(val / 1_000_000).toLocaleString("ja-JP", { maximumFractionDigits: 0 })}`;
+  selectedYear?: number | null;
+  onSelectYear?: (year: number) => void;
 }
 
 const tooltipStyle = {
@@ -33,6 +37,8 @@ const tooltipStyle = {
 
 export default function FinancialTimeline({
   financials,
+  selectedYear,
+  onSelectYear,
 }: FinancialTimelineProps) {
   // Sort by fiscal year ascending for chart
   const chartData = [...financials]
@@ -76,7 +82,7 @@ export default function FinancialTimeline({
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             />
             <YAxis
-              tickFormatter={(v) => formatMillions(v)}
+              tickFormatter={(v) => formatMillionNumber(v)}
               tick={{ fill: "#6b7280", fontSize: 11 }}
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
               width={80}
@@ -85,8 +91,8 @@ export default function FinancialTimeline({
               contentStyle={tooltipStyle}
               formatter={(value: unknown, name: unknown) => {
                 const label = name === "revenue" ? "売上高" : "純利益";
-                const num = typeof value === "number" ? value : 0;
-                return [`${formatMillions(num)}百万`, label];
+                const num = typeof value === "number" ? value : null;
+                return [formatMillionYen(num), label];
               }}
             />
             <Legend
@@ -125,7 +131,7 @@ export default function FinancialTimeline({
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             />
             <YAxis
-              tickFormatter={(v) => formatMillions(v)}
+              tickFormatter={(v) => formatMillionNumber(v)}
               tick={{ fill: "#6b7280", fontSize: 11 }}
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
               width={80}
@@ -134,8 +140,8 @@ export default function FinancialTimeline({
               contentStyle={tooltipStyle}
               formatter={(value: unknown, name: unknown) => {
                 const label = name === "total_assets" ? "総資産" : "純資産";
-                const num = typeof value === "number" ? value : 0;
-                return [`${formatMillions(num)}百万`, label];
+                const num = typeof value === "number" ? value : null;
+                return [formatMillionYen(num), label];
               }}
             />
             <Legend
@@ -176,46 +182,63 @@ export default function FinancialTimeline({
             </tr>
           </thead>
           <tbody>
-            {financials.map((f, i) => (
-              <motion.tr
-                key={f.doc_id ?? i}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.05 }}
-                className="border-b border-white/3 text-gray-300 transition-colors hover:bg-white/3"
-              >
-                <td className="px-4 py-3 font-medium text-white">
-                  {f.fiscal_year ?? "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-xs">
-                  {f.revenue !== null ? f.revenue.toLocaleString("ja-JP") : "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-xs">
-                  {f.net_income_loss !== null
-                    ? f.net_income_loss.toLocaleString("ja-JP")
-                    : "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-xs">
-                  {f.total_assets !== null
-                    ? f.total_assets.toLocaleString("ja-JP")
-                    : "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-xs">
-                  {f.net_assets !== null
-                    ? f.net_assets.toLocaleString("ja-JP")
-                    : "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-xs">
-                  {f.roe !== null ? `${(f.roe * 100).toFixed(2)}%` : "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-xs">
-                  {f.per !== null ? f.per.toFixed(2) : "—"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-xs">
-                  {f.pbr !== null ? f.pbr.toFixed(2) : "—"}
-                </td>
-              </motion.tr>
-            ))}
+            {financials.map((f, i) => {
+              const isSelected =
+                selectedYear !== undefined &&
+                selectedYear !== null &&
+                f.fiscal_year === selectedYear;
+
+              return (
+                <motion.tr
+                  key={f.doc_id ?? i}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  onClick={() => {
+                    if (f.fiscal_year && onSelectYear) {
+                      onSelectYear(f.fiscal_year);
+                    }
+                  }}
+                  className={`border-b border-white/3 text-gray-300 transition-colors ${
+                    onSelectYear && f.fiscal_year ? "cursor-pointer" : ""
+                  } ${
+                    isSelected
+                      ? "bg-indigo-500/10 text-white"
+                      : "hover:bg-white/3"
+                  }`}
+                >
+                  <td className="px-4 py-3 font-medium text-white">
+                    <span className="inline-flex items-center gap-1.5">
+                      {f.fiscal_year ?? "—"}
+                      {isSelected && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />
+                      )}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-xs">
+                    {formatMillionYen(f.revenue)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-xs">
+                    {formatMillionYen(f.net_income_loss)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-xs">
+                    {formatMillionYen(f.total_assets)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-xs">
+                    {formatMillionYen(f.net_assets)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-xs">
+                    {formatPercent(f.roe)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-xs">
+                    {formatRatio(f.per)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-xs">
+                    {formatRatio(f.pbr)}
+                  </td>
+                </motion.tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

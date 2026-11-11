@@ -35,7 +35,7 @@ COMPANY_TAGS: dict[str, list[str]] = {
         # 営業収益、経営指標等
         "OperatingRevenue1SummaryOfBusinessResults",
         # 営業収入、経営指標等
-        "OperatingRevenue1SummaryOfBusinessResults",
+        "OperatingRevenue2SummaryOfBusinessResults",
         # 営業総収入、経営指標等
         "GrossOperatingRevenueSummaryOfBusinessResults",
         # 経常収益、経営指標等
@@ -136,8 +136,8 @@ SEGMENT_TAGS: dict[str, dict] = {
     "Segment Profit (セグメント利益)": {
         "context": "duration",
         "tags": [
-            # セグメント利益又は損失（△） [タイトル項目]
-            "SegmentProfitLossAbstrac",
+            # セグメント利益又は損失（△）
+            "SegmentProfitLoss",
             # セグメント利益（△損失）（IFRS）
             "SegmentProfitLossIFRS",
 

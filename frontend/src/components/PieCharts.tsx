@@ -10,6 +10,7 @@ import {
   Legend,
 } from "recharts";
 import type { SegmentDetail } from "@/types";
+import { formatMillionYen, formatNumber } from "@/lib/format";
 
 interface PieChartsProps {
   segments: SegmentDetail[];
@@ -61,9 +62,16 @@ interface SinglePieProps {
   emoji: string;
   data: ChartData[];
   delay: number;
+  formatTooltip: (val: number) => string;
 }
 
-function SinglePie({ title, emoji, data, delay }: SinglePieProps) {
+function SinglePie({
+  title,
+  emoji,
+  data,
+  delay,
+  formatTooltip,
+}: SinglePieProps) {
   if (data.length === 0) {
     return (
       <div className="glass-card flex flex-col items-center justify-center p-6 text-center">
@@ -109,7 +117,7 @@ function SinglePie({ title, emoji, data, delay }: SinglePieProps) {
           </Pie>
           <Tooltip
             formatter={(value: unknown) => {
-              if (typeof value === "number") return value.toLocaleString("ja-JP");
+              if (typeof value === "number") return formatTooltip(value);
               return String(value ?? "—");
             }}
             contentStyle={tooltipContentStyle}
@@ -160,18 +168,21 @@ export default function PieCharts({ segments, fiscalYear }: PieChartsProps) {
           emoji="💰"
           data={salesData}
           delay={0.1}
+          formatTooltip={(v) => formatMillionYen(v)}
         />
         <SinglePie
           title="利益"
           emoji="📈"
           data={profitData}
           delay={0.2}
+          formatTooltip={(v) => formatMillionYen(v)}
         />
         <SinglePie
           title="従業員数"
           emoji="👥"
           data={empData}
           delay={0.3}
+          formatTooltip={(v) => formatNumber(v, "人")}
         />
       </div>
     </motion.div>

@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import Link from "next/link";
 
 import Header from "@/components/Header";
 import { searchCompanies } from "@/lib/api";
@@ -16,17 +15,15 @@ import type { CompanySearchResult } from "@/types";
 function SearchInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const initialQuery = searchParams.get("q") || "";
+  const urlQuery = searchParams.get("q")?.trim() || "";
 
-  const [query, setQuery] = useState(initialQuery);
+  const [query, setQuery] = useState(urlQuery);
   const [results, setResults] = useState<CompanySearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
 
-  const didAutoSearch = useRef(false);
-
-  const doSearch = useCallback(async (q: string) => {
+  const executeSearch = useCallback(async (q: string) => {
     const trimmed = q.trim();
     if (!trimmed) return;
 
@@ -34,34 +31,41 @@ function SearchInner() {
     setIsSearching(true);
     setHasSearched(true);
 
-    // Update URL
-    const url = new URL(window.location.href);
-    url.searchParams.set("q", trimmed);
-    window.history.replaceState({}, "", url.toString());
-
     try {
       const data = await searchCompanies(trimmed);
       setResults(data.results);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "検索中にエラーが発生しました。");
+      setError(
+        err instanceof Error ? err.message : "検索中にエラーが発生しました。"
+      );
       setResults([]);
     } finally {
       setIsSearching(false);
     }
   }, []);
 
-  // Auto-search from URL params
+  // Sync input box & trigger search whenever URL ?q= parameter changes (including Back/Forward or Header search)
   useEffect(() => {
-    if (didAutoSearch.current) return;
-    if (initialQuery) {
-      didAutoSearch.current = true;
-      doSearch(initialQuery);
+    setQuery(urlQuery);
+    if (urlQuery) {
+      executeSearch(urlQuery);
+    } else {
+      setResults([]);
+      setHasSearched(false);
+      setError(null);
     }
-  }, [initialQuery, doSearch]);
+  }, [urlQuery, executeSearch]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    doSearch(query);
+    const trimmed = query.trim();
+    if (!trimmed) return;
+
+    if (trimmed === urlQuery) {
+      executeSearch(trimmed);
+    } else {
+      router.push(`/search?q=${encodeURIComponent(trimmed)}`);
+    }
   };
 
   return (
