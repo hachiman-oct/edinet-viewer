@@ -19,6 +19,32 @@ export function formatMillionYen(
 }
 
 /**
+ * カード表示用に数値部分と単位部分（百万円）を分割して返す
+ */
+export function formatMillionYenParts(
+  val: number | null | undefined,
+  fallback = "N/A"
+): { main: string; unit?: string } {
+  if (val === null || val === undefined) return { main: fallback };
+  if (val === 0) return { main: "0", unit: "百万円" };
+
+  const millions = val / 1_000_000;
+  if (Math.abs(millions) < 1) {
+    return {
+      main: millions.toLocaleString("ja-JP", {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 2,
+      }),
+      unit: "百万円",
+    };
+  }
+  return {
+    main: Math.round(millions).toLocaleString("ja-JP"),
+    unit: "百万円",
+  };
+}
+
+/**
  * グラフの軸ラベル用に百万円単位の数値文字列（カンマ区切り、単位なし）を返す
  */
 export function formatMillionNumber(val: number): string {
@@ -58,4 +84,3 @@ export function formatNumber(
   if (val === null || val === undefined) return fallback;
   return `${val.toLocaleString("ja-JP")}${suffix}`;
 }
-

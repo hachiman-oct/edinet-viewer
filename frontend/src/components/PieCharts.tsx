@@ -7,7 +7,6 @@ import {
   Cell,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from "recharts";
 import type { SegmentDetail } from "@/types";
 import { formatMillionYen, formatNumber } from "@/lib/format";
@@ -63,6 +62,7 @@ interface SinglePieProps {
   data: ChartData[];
   delay: number;
   formatTooltip: (val: number) => string;
+  excludedNote?: string | null;
 }
 
 function SinglePie({
@@ -71,6 +71,7 @@ function SinglePie({
   data,
   delay,
   formatTooltip,
+  excludedNote,
 }: SinglePieProps) {
   if (data.length === 0) {
     return (
@@ -78,30 +79,40 @@ function SinglePie({
         <span className="text-2xl">{emoji}</span>
         <p className="mt-2 text-sm font-medium text-gray-300">{title}</p>
         <p className="mt-1 text-xs text-gray-600">データなし</p>
+        {excludedNote && (
+          <p className="mt-2 text-[11px] text-rose-400/80">{excludedNote}</p>
+        )}
       </div>
     );
   }
+
+  const total = data.reduce((sum, item) => sum + item.value, 0);
 
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.9 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.5, delay }}
-      className="glass-card p-5"
+      className="glass-card flex flex-col p-5"
     >
-      <div className="mb-3 flex items-center gap-2">
-        <span className="text-base">{emoji}</span>
-        <h3 className="text-sm font-semibold text-gray-300">{title}</h3>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-base">{emoji}</span>
+          <h3 className="text-sm font-semibold text-gray-300">{title}</h3>
+        </div>
+        <span className="font-mono text-[11px] text-gray-500">
+          計 {formatTooltip(total)}
+        </span>
       </div>
 
-      <ResponsiveContainer width="100%" height={260}>
+      <ResponsiveContainer width="100%" height={200}>
         <PieChart>
           <Pie
             data={data}
             cx="50%"
             cy="50%"
-            innerRadius={50}
-            outerRadius={90}
+            innerRadius={48}
+            outerRadius={82}
             paddingAngle={3}
             dataKey="value"
             stroke="none"
@@ -117,24 +128,49 @@ function SinglePie({
           </Pie>
           <Tooltip
             formatter={(value: unknown) => {
-              if (typeof value === "number") return formatTooltip(value);
+              if (typeof value === "number") {
+                const pct =
+                  total > 0 ? ` (${((value / total) * 100).toFixed(1)}%)` : "";
+                return `${formatTooltip(value)}${pct}`;
+              }
               return String(value ?? "—");
             }}
             contentStyle={tooltipContentStyle}
             itemStyle={{ color: "#e5e7eb" }}
           />
-          <Legend
-            verticalAlign="bottom"
-            iconType="circle"
-            iconSize={8}
-            wrapperStyle={{
-              fontSize: "11px",
-              color: "#9ca3af",
-              paddingTop: "12px",
-            }}
-          />
         </PieChart>
       </ResponsiveContainer>
+
+      {/* Custom Legend List (prevents chart squishing & shows share %) */}
+      <div className="mt-2 max-h-36 space-y-1.5 overflow-y-auto border-t border-white/5 pt-3 pr-1">
+        {data.map((item, index) => {
+          const pct = total > 0 ? ((item.value / total) * 100).toFixed(1) : "0.0";
+          return (
+            <div
+              key={`${item.name}-${index}`}
+              className="flex items-center justify-between gap-2 text-xs"
+              title={`${item.name}: ${formatTooltip(item.value)} (${pct}%)`}
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                />
+                <span className="truncate text-gray-300">{item.name}</span>
+              </div>
+              <span className="shrink-0 font-mono text-[11px] text-gray-400">
+                {pct}%
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {excludedNote && (
+        <p className="mt-3 rounded-lg bg-rose-500/5 px-2.5 py-1.5 text-[11px] text-rose-400/90">
+          {excludedNote}
+        </p>
+      )}
     </motion.div>
   );
 }
@@ -143,6 +179,16 @@ export default function PieCharts({ segments, fiscalYear }: PieChartsProps) {
   const salesData = buildChartData(segments, (s) => s.segment_revenue);
   const profitData = buildChartData(segments, (s) => s.segment_profit);
   const empData = buildChartData(segments, (s) => s.segment_employees);
+
+  const negativeProfitSegments = segments.filter(
+    (s) => s.segment_profit !== null && s.segment_profit < 0
+  );
+  const profitExcludedNote =
+    negativeProfitSegments.length > 0
+      ? `※ 赤字セグメント（${negativeProfitSegments
+          .map((s) => `${s.segment_name}: ${formatMillionYen(s.segment_profit)}`)
+          .join("、")}）は円グラフから除外`
+      : null;
 
   return (
     <motion.div
@@ -176,6 +222,7 @@ export default function PieCharts({ segments, fiscalYear }: PieChartsProps) {
           data={profitData}
           delay={0.2}
           formatTooltip={(v) => formatMillionYen(v)}
+          excludedNote={profitExcludedNote}
         />
         <SinglePie
           title="従業員数"

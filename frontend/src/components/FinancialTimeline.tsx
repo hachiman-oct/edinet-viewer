@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
   Legend,
+  ReferenceLine,
 } from "recharts";
 import type { FinancialSummary } from "@/types";
 import {
@@ -33,6 +34,10 @@ const tooltipStyle = {
   fontSize: "12px",
   color: "#e5e7eb",
   boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+};
+
+const hoverCursorStyle = {
+  fill: "rgba(255, 255, 255, 0.04)",
 };
 
 export default function FinancialTimeline({
@@ -68,46 +73,67 @@ export default function FinancialTimeline({
         </span>
       </div>
 
-      {/* Revenue & Net Income Chart */}
+      {/* Revenue & Net Income Chart (Dual Y-Axis) */}
       <div className="mb-6">
-        <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-gray-500">
-          売上高 / 純利益 (百万円)
-        </h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-gray-400">
+            売上高（左軸） / 純利益（右軸） (百万円)
+          </h3>
+        </div>
         <ResponsiveContainer width="100%" height={280}>
           <BarChart data={chartData} barCategoryGap="20%">
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
             <XAxis
               dataKey="year"
-              tick={{ fill: "#6b7280", fontSize: 11 }}
+              tick={{ fill: "#9ca3af", fontSize: 11 }}
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             />
             <YAxis
+              yAxisId="left"
               tickFormatter={(v) => formatMillionNumber(v)}
-              tick={{ fill: "#6b7280", fontSize: 11 }}
-              axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+              tick={{ fill: "#818cf8", fontSize: 11 }}
+              axisLine={{ stroke: "rgba(129,140,248,0.25)" }}
               width={80}
             />
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tickFormatter={(v) => formatMillionNumber(v)}
+              tick={{ fill: "#34d399", fontSize: 11 }}
+              axisLine={{ stroke: "rgba(52,211,153,0.25)" }}
+              width={80}
+            />
+            <ReferenceLine
+              yAxisId="right"
+              y={0}
+              stroke="rgba(255,255,255,0.12)"
+              strokeDasharray="3 3"
+            />
             <Tooltip
+              cursor={hoverCursorStyle}
               contentStyle={tooltipStyle}
               formatter={(value: unknown, name: unknown) => {
-                const label = name === "revenue" ? "売上高" : "純利益";
+                const label =
+                  name === "revenue" ? "売上高（左軸）" : "純利益（右軸）";
                 const num = typeof value === "number" ? value : null;
                 return [formatMillionYen(num), label];
               }}
             />
             <Legend
               formatter={(value: string) =>
-                value === "revenue" ? "売上高" : "純利益"
+                value === "revenue" ? "売上高（左軸）" : "純利益（右軸）"
               }
               wrapperStyle={{ fontSize: "11px", color: "#9ca3af" }}
             />
             <Bar
+              yAxisId="left"
               dataKey="revenue"
               fill="#818cf8"
               radius={[4, 4, 0, 0]}
               name="revenue"
             />
             <Bar
+              yAxisId="right"
               dataKey="net_income_loss"
               fill="#34d399"
               radius={[4, 4, 0, 0]}
@@ -119,7 +145,7 @@ export default function FinancialTimeline({
 
       {/* Assets Chart */}
       <div>
-        <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-gray-500">
+        <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-gray-400">
           総資産 / 純資産 (百万円)
         </h3>
         <ResponsiveContainer width="100%" height={280}>
@@ -127,16 +153,17 @@ export default function FinancialTimeline({
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
             <XAxis
               dataKey="year"
-              tick={{ fill: "#6b7280", fontSize: 11 }}
+              tick={{ fill: "#9ca3af", fontSize: 11 }}
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             />
             <YAxis
               tickFormatter={(v) => formatMillionNumber(v)}
-              tick={{ fill: "#6b7280", fontSize: 11 }}
+              tick={{ fill: "#9ca3af", fontSize: 11 }}
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
               width={80}
             />
             <Tooltip
+              cursor={hoverCursorStyle}
               contentStyle={tooltipStyle}
               formatter={(value: unknown, name: unknown) => {
                 const label = name === "total_assets" ? "総資産" : "純資産";
@@ -204,10 +231,10 @@ export default function FinancialTimeline({
                   } ${
                     isSelected
                       ? "bg-indigo-500/10 text-white"
-                      : "hover:bg-white/3"
+                      : "hover:bg-white/5"
                   }`}
                 >
-                  <td className="px-4 py-3 font-medium text-white">
+                  <td className="px-4 py-3 font-mono font-medium text-white">
                     <span className="inline-flex items-center gap-1.5">
                       {f.fiscal_year ?? "—"}
                       {isSelected && (

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
 
 import Header from "@/components/Header";
 import { searchCompanies } from "@/lib/api";
@@ -76,10 +77,10 @@ function SearchInner() {
         <div className="absolute -bottom-[300px] -right-[300px] h-[600px] w-[600px] rounded-full bg-sky-500/5 blur-3xl" />
       </div>
 
-      <div className="relative">
+      <div className="relative flex min-h-screen flex-col">
         <Header />
 
-        <main className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+        <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 px-6 py-8">
           {/* Search Form */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -163,15 +164,15 @@ function SearchInner() {
                         <h2 className="text-base font-semibold text-gray-200">
                           検索結果
                         </h2>
-                        <span className="rounded-full bg-indigo-500/10 px-2.5 py-0.5 text-xs font-medium text-indigo-400">
+                        <span className="rounded-full bg-indigo-500/10 px-2.5 py-0.5 font-mono text-xs font-medium text-indigo-400">
                           {results.length}
                         </span>
                       </div>
                     </div>
 
-                    <div className="max-h-[500px] overflow-auto">
+                    <div className="overflow-x-auto">
                       <table className="w-full text-left text-sm">
-                        <thead className="sticky top-0 z-10 bg-navy-900/90 backdrop-blur-sm">
+                        <thead className="bg-navy-900/60">
                           <tr className="border-b border-white/5 text-xs font-medium uppercase tracking-wider text-gray-500">
                             <th className="px-6 py-3">企業名</th>
                             <th className="px-4 py-3">銘柄コード</th>
@@ -181,41 +182,56 @@ function SearchInner() {
                           </tr>
                         </thead>
                         <tbody>
-                          {results.map((r, i) => (
-                            <motion.tr
-                              key={r.edinet_code}
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: i * 0.03 }}
-                              className="cursor-pointer border-b border-white/3 text-gray-300 transition-colors hover:bg-white/5"
-                              onClick={() =>
-                                router.push(`/companies/${r.edinet_code}`)
-                              }
-                            >
-                              <td className="px-6 py-3">
-                                <div className="font-medium text-white">
-                                  {r.company_name_ja ?? "—"}
-                                </div>
-                                {r.company_name_en && (
-                                  <div className="mt-0.5 text-[11px] text-gray-500">
-                                    {r.company_name_en}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-4 py-3 font-mono text-xs text-gray-400">
-                                {r.ticker_symbol ?? "—"}
-                              </td>
-                              <td className="px-4 py-3 text-xs text-gray-400">
-                                {r.industry ?? "—"}
-                              </td>
-                              <td className="px-4 py-3 font-mono text-xs text-gray-400">
-                                {r.latest_period_end ?? "—"}
-                              </td>
-                              <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                                {r.edinet_code}
-                              </td>
-                            </motion.tr>
-                          ))}
+                          {results.map((r, i) => {
+                            const href = `/companies/${r.edinet_code}`;
+                            return (
+                              <motion.tr
+                                key={r.edinet_code}
+                                initial={{ opacity: 0, x: -10 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: Math.min(i * 0.02, 0.3) }}
+                                className="group cursor-pointer border-b border-white/3 text-gray-300 transition-colors hover:bg-white/5"
+                                onClick={(e) => {
+                                  if (
+                                    (e.target as HTMLElement).closest("a") ||
+                                    e.metaKey ||
+                                    e.ctrlKey
+                                  ) {
+                                    return;
+                                  }
+                                  router.push(href);
+                                }}
+                              >
+                                <td className="px-6 py-3">
+                                  <Link
+                                    href={href}
+                                    className="block focus:outline-none"
+                                  >
+                                    <div className="font-medium text-white transition-colors group-hover:text-indigo-300">
+                                      {r.company_name_ja ?? "—"}
+                                    </div>
+                                    {r.company_name_en && (
+                                      <div className="mt-0.5 text-[11px] text-gray-500">
+                                        {r.company_name_en}
+                                      </div>
+                                    )}
+                                  </Link>
+                                </td>
+                                <td className="px-4 py-3 font-mono text-xs text-gray-400">
+                                  {r.ticker_symbol ?? "—"}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-gray-400">
+                                  {r.industry ?? "—"}
+                                </td>
+                                <td className="px-4 py-3 font-mono text-xs text-gray-400">
+                                  {r.latest_period_end ?? "—"}
+                                </td>
+                                <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                                  {r.edinet_code}
+                                </td>
+                              </motion.tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

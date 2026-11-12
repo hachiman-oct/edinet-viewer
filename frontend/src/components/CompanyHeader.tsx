@@ -9,12 +9,28 @@ interface CompanyHeaderProps {
 
 export default function CompanyHeader({ company }: CompanyHeaderProps) {
   const links = [
+    ...(company.ticker_symbol
+      ? [
+          {
+            label: "Yahoo!ファイナンス",
+            href: `https://finance.yahoo.co.jp/quote/${company.ticker_symbol}.T`,
+            className:
+              "bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20",
+          },
+          {
+            label: "株探",
+            href: `https://kabutan.jp/stock/?code=${company.ticker_symbol}`,
+            className: "bg-sky-500/10 text-sky-300 hover:bg-sky-500/20",
+          },
+        ]
+      : []),
     ...(company.jcn
       ? [
           {
             label: "gBizINFO",
             href: `https://info.gbiz.go.jp/hojin/ichiran?hojinBango=${company.jcn}`,
-            color: "emerald",
+            className:
+              "bg-emerald-400/10 text-emerald-400 hover:bg-emerald-400/20",
           },
         ]
       : []),
@@ -37,7 +53,9 @@ export default function CompanyHeader({ company }: CompanyHeaderProps) {
                 {company.company_name_ja ?? company.edinet_code}
               </h2>
               {company.company_name_en && (
-                <p className="text-sm text-gray-400">{company.company_name_en}</p>
+                <p className="text-sm text-gray-400">
+                  {company.company_name_en}
+                </p>
               )}
             </div>
           </div>
@@ -86,19 +104,23 @@ export default function CompanyHeader({ company }: CompanyHeaderProps) {
           <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-gray-500">
             外部リンク
           </p>
-          <div className="flex flex-wrap gap-1.5">
-            {links.map((link) => (
-              <a
-                key={link.label}
-                href={link.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-md bg-emerald-400/10 px-2 py-1 text-[10px] font-medium text-emerald-400 transition-colors hover:bg-emerald-400/20"
-              >
-                {link.label} ↗
-              </a>
-            ))}
-          </div>
+          {links.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {links.map((link) => (
+                <a
+                  key={link.label}
+                  href={link.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`rounded-md px-2 py-1 text-[10px] font-medium transition-colors ${link.className}`}
+                >
+                  {link.label} ↗
+                </a>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm font-medium text-gray-500">—</p>
+          )}
         </div>
       </div>
     </motion.div>

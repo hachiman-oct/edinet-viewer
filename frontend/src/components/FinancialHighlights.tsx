@@ -3,8 +3,7 @@
 import { motion } from "framer-motion";
 import type { FinancialSummary } from "@/types";
 import {
-  formatMillionYen,
-  formatPercent,
+  formatMillionYenParts,
   formatRatio,
 } from "@/lib/format";
 
@@ -71,43 +70,52 @@ const metrics = [
     key: "revenue",
     label: "売上高",
     icon: "💰",
-    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+    formatParts: (v: number | null | undefined) => formatMillionYenParts(v),
   },
   {
     key: "net_income_loss",
     label: "純利益",
     icon: "📈",
-    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+    formatParts: (v: number | null | undefined) => formatMillionYenParts(v),
   },
   {
     key: "total_assets",
     label: "総資産",
     icon: "🏦",
-    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+    formatParts: (v: number | null | undefined) => formatMillionYenParts(v),
   },
   {
     key: "net_assets",
     label: "純資産",
     icon: "💎",
-    format: (v: number | null | undefined) => formatMillionYen(v, "N/A"),
+    formatParts: (v: number | null | undefined) => formatMillionYenParts(v),
   },
   {
     key: "roe",
     label: "ROE",
     icon: "🎯",
-    format: (v: number | null | undefined) => formatPercent(v, "N/A"),
+    formatParts: (v: number | null | undefined) =>
+      v === null || v === undefined
+        ? { main: "N/A" }
+        : { main: (v * 100).toFixed(2), unit: "%" },
   },
   {
     key: "per",
     label: "PER",
     icon: "📊",
-    format: (v: number | null | undefined) => formatRatio(v, "N/A"),
+    formatParts: (v: number | null | undefined) =>
+      v === null || v === undefined
+        ? { main: "N/A" }
+        : { main: formatRatio(v), unit: "倍" },
   },
   {
     key: "pbr",
     label: "PBR",
     icon: "📉",
-    format: (v: number | null | undefined) => formatRatio(v, "N/A"),
+    formatParts: (v: number | null | undefined) =>
+      v === null || v === undefined
+        ? { main: "N/A" }
+        : { main: formatRatio(v), unit: "倍" },
   },
 ] as const;
 
@@ -144,7 +152,7 @@ export default function FinancialHighlights({
 
       {/* Metric Cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        {metrics.map(({ key, label, icon, format }, i) => {
+        {metrics.map(({ key, label, icon, formatParts }, i) => {
           const val = financial[key as keyof FinancialSummary] as
             | number
             | null;
@@ -158,6 +166,7 @@ export default function FinancialHighlights({
             val,
             prevVal
           );
+          const { main, unit } = formatParts(val);
 
           return (
             <motion.div
@@ -165,12 +174,12 @@ export default function FinancialHighlights({
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ delay: 0.1 + i * 0.05 }}
-              className="glass-card glass-card-hover p-4"
+              className="glass-card glass-card-hover flex flex-col justify-between p-4"
             >
-              <div className="mb-1 flex items-center justify-between gap-1">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
                 <div className="flex items-center gap-1.5">
                   <span className="text-base">{icon}</span>
-                  <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500">
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
                     {label}
                   </p>
                 </div>
@@ -188,7 +197,14 @@ export default function FinancialHighlights({
                   </span>
                 )}
               </div>
-              <p className="text-lg font-bold text-white">{format(val)}</p>
+              <p className="font-mono text-lg font-bold tracking-tight text-white sm:text-xl">
+                {main}
+                {unit && (
+                  <span className="ml-1 font-sans text-xs font-medium text-gray-400">
+                    {unit}
+                  </span>
+                )}
+              </p>
             </motion.div>
           );
         })}

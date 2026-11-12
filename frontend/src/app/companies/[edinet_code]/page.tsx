@@ -128,10 +128,10 @@ export default function CompanyPage() {
         <div className="absolute -bottom-[300px] -right-[300px] h-[600px] w-[600px] rounded-full bg-sky-500/5 blur-3xl" />
       </div>
 
-      <div className="relative">
+      <div className="relative flex min-h-screen flex-col">
         <Header />
 
-        <main className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+        <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 px-6 py-8">
           {/* Back Button */}
           <button
             onClick={handleBack}
@@ -162,12 +162,39 @@ export default function CompanyPage() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="flex flex-col items-center justify-center py-20"
+                className="space-y-6"
               >
-                <div className="mb-4 h-8 w-8 animate-spin-slow rounded-full border-2 border-indigo-500/30 border-t-indigo-500" />
-                <p className="text-sm text-gray-400">
-                  {edinetCode} のデータを取得中...
-                </p>
+                {/* Header Skeleton */}
+                <div className="glass-card animate-pulse p-6">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-2">
+                      <div className="h-6 w-56 rounded-lg bg-white/10" />
+                      <div className="h-4 w-40 rounded-lg bg-white/5" />
+                    </div>
+                    <div className="h-8 w-24 rounded-lg bg-white/5" />
+                  </div>
+                  <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
+                    {[0, 1, 2, 3].map((n) => (
+                      <div key={n} className="h-16 rounded-xl bg-white/5" />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Highlights Skeleton */}
+                <div className="glass-card animate-pulse p-6">
+                  <div className="mb-4 h-5 w-36 rounded-lg bg-white/10" />
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                    {[0, 1, 2, 3, 4, 5, 6].map((n) => (
+                      <div key={n} className="h-20 rounded-xl bg-white/5" />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Chart Skeleton */}
+                <div className="glass-card animate-pulse p-6">
+                  <div className="mb-4 h-5 w-32 rounded-lg bg-white/10" />
+                  <div className="h-64 rounded-xl bg-white/5" />
+                </div>
               </motion.div>
             )}
 
@@ -257,6 +284,11 @@ export default function CompanyPage() {
             )}
           </AnimatePresence>
         </main>
+
+        {/* Footer */}
+        <footer className="border-t border-white/5 py-6 text-center text-xs text-gray-600">
+          Powered by Next.js &amp; FastAPI | Data from EDINET
+        </footer>
       </div>
     </div>
   );

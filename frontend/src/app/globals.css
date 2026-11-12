@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, sans-serif;
   --color-navy-950: #0a0e27;
   --color-navy-900: #0f1535;
   --color-navy-800: #1a2248;
@@ -20,6 +20,10 @@ html,
 body {
   @apply bg-navy-950 text-gray-100 antialiased;
   min-height: 100vh;
+}
+
+.font-mono {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Glassmorphism card */

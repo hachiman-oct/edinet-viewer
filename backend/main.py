@@ -289,9 +289,3 @@ async def api_import_edinet_codelist(request: Request):
         return {"error": str(e), "message": "Failed to execute MERGE query"}
 
     return {"imported": len(rows), "message": "Merged successfully"}
-
-
-@app.get("/health")
-def health_check():
-    """Health check endpoint."""
-    return {"status": "ok"}
