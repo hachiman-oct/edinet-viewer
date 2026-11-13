@@ -300,14 +300,23 @@ def fetch_company_detail(
 
     seg_query = f"""
     SELECT
-        fiscal_year, segment_name, segment_revenue,
-        segment_profit, segment_employees
-    FROM `{BQ_DATASET}.{BQ_SEGMENT_DATA}`
-    WHERE edinet_code = @code
-    QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY fiscal_year, segment_name
-        ORDER BY doc_id DESC
-    ) = 1
+        fiscal_year,
+        segment_name,
+        MAX(segment_revenue) AS segment_revenue,
+        MAX(segment_profit) AS segment_profit,
+        MAX(segment_employees) AS segment_employees
+    FROM (
+        SELECT
+            fiscal_year, segment_name, segment_revenue,
+            segment_profit, segment_employees
+        FROM `{BQ_DATASET}.{BQ_SEGMENT_DATA}`
+        WHERE edinet_code = @code
+        QUALIFY DENSE_RANK() OVER (
+            PARTITION BY fiscal_year, segment_name
+            ORDER BY doc_id DESC
+        ) = 1
+    )
+    GROUP BY fiscal_year, segment_name
     ORDER BY fiscal_year DESC, segment_name
     """
 
@@ -458,61 +467,68 @@ def mark_document_processed(
     mark_documents_processed_bulk(client, project_id, [doc_id])
 
 
+_COMPANY_METADATA_COLUMNS = (
+    "company_name_ja",
+    "company_name_en",
+    "ticker_symbol",
+    "industry",
+    "jcn",
+)
+
+
+def _normalize_company_update_row(edinet_code: str, raw: dict) -> dict:
+    """company_master MERGE 用に単一企業の更新ペイロードを正規化する。"""
+    row: dict[str, str | None] = {"edinet_code": edinet_code}
+    for col in _COMPANY_METADATA_COLUMNS:
+        val = raw.get(col)
+        row[col] = None if is_null(val) else str(val)
+
+    period_end = raw.get("latest_period_end")
+    if is_null(period_end):
+        row["latest_period_end"] = None
+    elif hasattr(period_end, "isoformat"):
+        row["latest_period_end"] = period_end.isoformat()[:10]
+    else:
+        row["latest_period_end"] = str(period_end)[:10]
+    return row
+
+
 def upsert_company_master(
     client: bigquery.Client, project_id: str, edinet_code: str, **kwargs
 ) -> None:
-    """単一企業の company_master を MERGE 更新する（latest_period_end の巻き戻り防止付き）。"""
+    """単一企業の company_master を MERGE 更新する（古い決算期による巻き戻り防止付き）。"""
     clean_kwargs = {k: v for k, v in kwargs.items() if not is_null(v)}
     if not clean_kwargs:
         return
-
-    set_parts = []
-    params = [
-        bigquery.ScalarQueryParameter("edinet_code", "STRING", edinet_code)
-    ]
-
-    for key, value in clean_kwargs.items():
-        param_name = f"p_{key}"
-        if key == "latest_period_end":
-            set_parts.append(
-                f"T.{key} = CASE "
-                f"WHEN T.{key} IS NULL THEN @{param_name} "
-                f"ELSE GREATEST(T.{key}, @{param_name}) END"
-            )
-            params.append(bigquery.ScalarQueryParameter(param_name, "DATE", value))
-        else:
-            set_parts.append(f"T.{key} = @{param_name}")
-            params.append(
-                bigquery.ScalarQueryParameter(param_name, "STRING", str(value))
-            )
-
-    set_clause = ", ".join(set_parts)
-    now_clause = "T.last_modified = CURRENT_TIMESTAMP()"
-
-    query = f"""
-    MERGE `{project_id}.{BQ_DATASET}.{BQ_COMPANY_MASTER}` T
-    USING (SELECT @edinet_code AS edinet_code) S
-    ON T.edinet_code = S.edinet_code
-    WHEN MATCHED THEN
-        UPDATE SET {set_clause}, {now_clause}
-    WHEN NOT MATCHED THEN
-        INSERT (edinet_code, {', '.join(clean_kwargs.keys())}, last_modified)
-        VALUES (@edinet_code, {', '.join('@p_' + k for k in clean_kwargs.keys())}, CURRENT_TIMESTAMP())
-    """
-
-    job_config = bigquery.QueryJobConfig(query_parameters=params)
-    client.query(query, job_config=job_config).result()
+    upsert_company_master_bulk(
+        client,
+        project_id,
+        {edinet_code: {"edinet_code": edinet_code, **clean_kwargs}},
+    )
 
 
 def upsert_company_master_bulk(
     client: bigquery.Client, project_id: str, company_updates: dict[str, dict]
 ) -> None:
-    """複数企業の company_master を1回の MERGE クエリで一括更新する。"""
+    """複数企業の company_master を1回の MERGE クエリで一括更新する（巻き戻り防止付き）。"""
     if not company_updates:
         return
 
-    rows = list(company_updates.values())
+    rows = [
+        _normalize_company_update_row(code, payload)
+        for code, payload in company_updates.items()
+    ]
     json_data = json.dumps(rows)
+
+    newer_cond = (
+        "S.latest_period_end IS NOT NULL AND "
+        "(T.latest_period_end IS NULL OR S.latest_period_end >= T.latest_period_end)"
+    )
+    metadata_set_clauses = ",\n        ".join(
+        f"{col} = CASE WHEN {newer_cond} THEN COALESCE(S.{col}, T.{col}) "
+        f"ELSE COALESCE(T.{col}, S.{col}) END"
+        for col in _COMPANY_METADATA_COLUMNS
+    )
 
     query = f"""
     MERGE `{project_id}.{BQ_DATASET}.{BQ_COMPANY_MASTER}` T
@@ -521,6 +537,8 @@ def upsert_company_master_bulk(
         JSON_VALUE(j, '$.edinet_code') AS edinet_code,
         JSON_VALUE(j, '$.ticker_symbol') AS ticker_symbol,
         JSON_VALUE(j, '$.company_name_ja') AS company_name_ja,
+        JSON_VALUE(j, '$.company_name_en') AS company_name_en,
+        JSON_VALUE(j, '$.industry') AS industry,
         JSON_VALUE(j, '$.jcn') AS jcn,
         SAFE_CAST(JSON_VALUE(j, '$.latest_period_end') AS DATE) AS latest_period_end
       FROM UNNEST(JSON_QUERY_ARRAY(@json_str)) AS j
@@ -528,9 +546,7 @@ def upsert_company_master_bulk(
     ON T.edinet_code = S.edinet_code
     WHEN MATCHED THEN
       UPDATE SET
-        company_name_ja = COALESCE(S.company_name_ja, T.company_name_ja),
-        ticker_symbol = COALESCE(S.ticker_symbol, T.ticker_symbol),
-        jcn = COALESCE(S.jcn, T.jcn),
+        {metadata_set_clauses},
         latest_period_end = CASE
           WHEN T.latest_period_end IS NULL THEN S.latest_period_end
           WHEN S.latest_period_end IS NULL THEN T.latest_period_end
@@ -538,8 +554,14 @@ def upsert_company_master_bulk(
         END,
         last_modified = CURRENT_TIMESTAMP()
     WHEN NOT MATCHED THEN
-      INSERT (edinet_code, ticker_symbol, company_name_ja, jcn, latest_period_end, last_modified)
-      VALUES (S.edinet_code, S.ticker_symbol, S.company_name_ja, S.jcn, S.latest_period_end, CURRENT_TIMESTAMP())
+      INSERT (
+        edinet_code, ticker_symbol, company_name_ja,
+        company_name_en, industry, jcn, latest_period_end, last_modified
+      )
+      VALUES (
+        S.edinet_code, S.ticker_symbol, S.company_name_ja,
+        S.company_name_en, S.industry, S.jcn, S.latest_period_end, CURRENT_TIMESTAMP()
+      )
     """
 
     job_config = bigquery.QueryJobConfig(
@@ -548,6 +570,89 @@ def upsert_company_master_bulk(
         ]
     )
     client.query(query, job_config=job_config).result()
+
+
+def sync_company_master_from_documents(
+    client: bigquery.Client,
+    project_id: str | None = None,
+    edinet_codes: list[str] | None = None,
+) -> int:
+    """
+    documents テーブルの最新提出書類情報から company_master の企業名・証券コード・法人番号と
+    処理済み最新決算期（latest_period_end）を同期・修復する。
+    """
+    resolved_project = project_id or client.project
+    params: list[bigquery.QueryParameter] = []
+    code_filter = ""
+    if edinet_codes:
+        code_filter = "AND edinet_code IN UNNEST(@edinet_codes)"
+        params.append(
+            bigquery.ArrayQueryParameter("edinet_codes", "STRING", edinet_codes)
+        )
+
+    latest_order = (
+        "ORDER BY SAFE_CAST(period_end AS DATE) DESC NULLS LAST, "
+        "submit_date_time DESC NULLS LAST, doc_id DESC LIMIT 1"
+    )
+    query = f"""
+    MERGE `{resolved_project}.{BQ_DATASET}.{BQ_COMPANY_MASTER}` T
+    USING (
+      SELECT
+        edinet_code,
+        ARRAY_AGG(
+          NULLIF(TRIM(filer_name), '')
+          IGNORE NULLS
+          {latest_order}
+        )[SAFE_OFFSET(0)] AS company_name_ja,
+        ARRAY_AGG(
+          IF(LENGTH(TRIM(IFNULL(sec_code, ''))) >= 4, SUBSTR(TRIM(sec_code), 1, 4), NULL)
+          IGNORE NULLS
+          {latest_order}
+        )[SAFE_OFFSET(0)] AS ticker_symbol,
+        ARRAY_AGG(
+          NULLIF(TRIM(jcn), '')
+          IGNORE NULLS
+          {latest_order}
+        )[SAFE_OFFSET(0)] AS jcn,
+        MAX(CASE WHEN is_processed = TRUE THEN SAFE_CAST(period_end AS DATE) END) AS max_processed_period_end
+      FROM `{resolved_project}.{BQ_DATASET}.{BQ_DOCUMENTS}`
+      WHERE edinet_code IS NOT NULL
+        AND edinet_code != ''
+        {code_filter}
+      GROUP BY edinet_code
+    ) S
+    ON T.edinet_code = S.edinet_code
+    WHEN MATCHED AND (
+      (S.company_name_ja IS NOT NULL AND IFNULL(T.company_name_ja, '') != S.company_name_ja)
+      OR (S.ticker_symbol IS NOT NULL AND IFNULL(T.ticker_symbol, '') != S.ticker_symbol)
+      OR (S.jcn IS NOT NULL AND IFNULL(T.jcn, '') != S.jcn)
+      OR (
+        S.max_processed_period_end IS NOT NULL
+        AND (T.latest_period_end IS NULL OR T.latest_period_end < S.max_processed_period_end)
+      )
+    ) THEN
+      UPDATE SET
+        company_name_ja = COALESCE(S.company_name_ja, T.company_name_ja),
+        ticker_symbol = COALESCE(S.ticker_symbol, T.ticker_symbol),
+        jcn = COALESCE(S.jcn, T.jcn),
+        latest_period_end = CASE
+          WHEN S.max_processed_period_end IS NULL THEN T.latest_period_end
+          WHEN T.latest_period_end IS NULL THEN S.max_processed_period_end
+          ELSE GREATEST(T.latest_period_end, S.max_processed_period_end)
+        END,
+        last_modified = CURRENT_TIMESTAMP()
+    WHEN NOT MATCHED AND S.max_processed_period_end IS NOT NULL THEN
+      INSERT (edinet_code, ticker_symbol, company_name_ja, jcn, latest_period_end, last_modified)
+      VALUES (S.edinet_code, S.ticker_symbol, S.company_name_ja, S.jcn, S.max_processed_period_end, CURRENT_TIMESTAMP())
+    """
+
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+    job = client.query(query, job_config=job_config)
+    job.result()
+    affected = job.num_dml_affected_rows or 0
+    if affected:
+        clear_query_cache()
+    return affected
 
 
 def flush_batch_buffers(
@@ -594,6 +699,7 @@ def execute_batch(
     api_key: str,
     limit: int = 100,
     order: str = "desc",
+    request_interval_sec: float = 0.25,
 ) -> dict:
     """
     未処理の documents を取得し、XBRL ダウンロード → パース → BigQuery バルク投入を実行する。
@@ -645,6 +751,34 @@ def execute_batch(
     seg_rows_buf: list[dict] = []
     company_updates_buf: dict[str, dict] = {}
     processed_doc_ids_buf: list[str] = []
+    flushed_edinet_codes: set[str] = set()
+
+    def _flush_if_needed(force: bool = False) -> None:
+        has_data = bool(
+            processed_doc_ids_buf
+            or fin_rows_buf
+            or seg_rows_buf
+            or company_updates_buf
+        )
+        if not has_data:
+            return
+        if not force and len(processed_doc_ids_buf) < FLUSH_CHUNK_SIZE:
+            return
+        label = "final " if force else ""
+        logger.info(
+            "  💾 Flushing %sbatch chunk (%d docs)...",
+            label,
+            len(processed_doc_ids_buf),
+        )
+        flushed_edinet_codes.update(company_updates_buf.keys())
+        flush_batch_buffers(
+            client,
+            project_id,
+            fin_rows_buf,
+            seg_rows_buf,
+            company_updates_buf,
+            processed_doc_ids_buf,
+        )
 
     for idx, doc_row in enumerate(doc_rows, start=1):
         doc_id = doc_row["doc_id"]
@@ -668,20 +802,9 @@ def execute_batch(
                 )
                 processed_doc_ids_buf.append(doc_id)
                 skipped_count += 1
-                if len(processed_doc_ids_buf) >= FLUSH_CHUNK_SIZE:
-                    logger.info(
-                        "  💾 Flushing batch chunk (%d docs)...",
-                        len(processed_doc_ids_buf),
-                    )
-                    flush_batch_buffers(
-                        client,
-                        project_id,
-                        fin_rows_buf,
-                        seg_rows_buf,
-                        company_updates_buf,
-                        processed_doc_ids_buf,
-                    )
-                time.sleep(1)
+                _flush_if_needed()
+                if request_interval_sec > 0:
+                    time.sleep(request_interval_sec)
                 continue
 
             company_summary, segment_details, _ = extract_xbrl_data(
@@ -759,59 +882,44 @@ def execute_batch(
                     "latest_period_end": period_end_str,
                 }
             else:
-                if ticker_symbol and not existing_comp.get("ticker_symbol"):
-                    existing_comp["ticker_symbol"] = ticker_symbol
-                if filer_name and not existing_comp.get("company_name_ja"):
-                    existing_comp["company_name_ja"] = filer_name
-                if jcn and not existing_comp.get("jcn"):
-                    existing_comp["jcn"] = jcn
-                if period_end_str:
-                    prev_end = existing_comp.get("latest_period_end")
-                    if not prev_end or period_end_str > prev_end:
-                        existing_comp["latest_period_end"] = period_end_str
+                prev_end = existing_comp.get("latest_period_end")
+                is_newer_or_equal = bool(
+                    period_end_str and (not prev_end or period_end_str >= prev_end)
+                )
+                for field, incoming_val in (
+                    ("ticker_symbol", ticker_symbol),
+                    ("company_name_ja", filer_name),
+                    ("jcn", jcn),
+                ):
+                    if incoming_val and (
+                        is_newer_or_equal or not existing_comp.get(field)
+                    ):
+                        existing_comp[field] = incoming_val
+                if is_newer_or_equal:
+                    existing_comp["latest_period_end"] = period_end_str
 
             processed_doc_ids_buf.append(doc_id)
             processed_count += 1
             logger.info("  ✅ Parsed: %s", doc_id)
 
-            if len(processed_doc_ids_buf) >= FLUSH_CHUNK_SIZE:
-                logger.info(
-                    "  💾 Flushing batch chunk (%d docs)...",
-                    len(processed_doc_ids_buf),
-                )
-                flush_batch_buffers(
-                    client,
-                    project_id,
-                    fin_rows_buf,
-                    seg_rows_buf,
-                    company_updates_buf,
-                    processed_doc_ids_buf,
-                )
+            _flush_if_needed()
 
-            time.sleep(1)
+            if request_interval_sec > 0:
+                time.sleep(request_interval_sec)
 
         except Exception as e:
             logger.error("  ❌ Error processing %s: %s", doc_id, str(e))
             errors.append({"doc_id": doc_id, "error": str(e)})
             continue
 
-    if (
-        processed_doc_ids_buf
-        or fin_rows_buf
-        or seg_rows_buf
-        or company_updates_buf
-    ):
-        logger.info(
-            "  💾 Flushing final batch chunk (%d docs)...",
-            len(processed_doc_ids_buf),
-        )
-        flush_batch_buffers(
+    _flush_if_needed(force=True)
+
+    # 未処理の最新書類に商号変更等がある場合も company_master が最新名になるよう同期
+    if flushed_edinet_codes:
+        sync_company_master_from_documents(
             client,
-            project_id,
-            fin_rows_buf,
-            seg_rows_buf,
-            company_updates_buf,
-            processed_doc_ids_buf,
+            project_id=project_id,
+            edinet_codes=sorted(flushed_edinet_codes),
         )
 
     # データ更新に伴いクエリキャッシュをクリア

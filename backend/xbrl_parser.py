@@ -7,6 +7,7 @@ XBRL / Label / Definition Linkbase XML のパース処理を提供する共通�
 """
 
 import io
+import json
 import logging
 import re
 import time
@@ -29,7 +30,7 @@ EDINET_API_DOC_URL = (
 # リトライ設定
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 5  # 秒（指数バックオフ: 5, 10, 20）
-RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 # TextBlock 除去用正規表現（プリコンパイルによる高速化）
 _RE_TEXTBLOCK_PAIR = re.compile(
@@ -97,65 +98,100 @@ def extract_files_from_zip_bytes(
     return xbrl_content, lab_content, def_content
 
 
+def _extract_error_response(resp: http_requests.Response) -> tuple[int, str] | None:
+    """HTTP 非200 または HTTP 200 の JSON エラー応答を (status_code, message) として返す。"""
+    if resp.status_code != 200:
+        return resp.status_code, f"HTTP {resp.status_code}"
+
+    stripped = resp.content.lstrip()
+    if not stripped.startswith(b"{"):
+        return None
+
+    try:
+        payload = json.loads(stripped.decode("utf-8", errors="replace"))
+    except (ValueError, TypeError):
+        return 500, "Invalid JSON payload from EDINET API"
+
+    if not isinstance(payload, dict):
+        return 500, "Unexpected JSON payload from EDINET API"
+
+    raw_status = (
+        payload["StatusCode"]
+        if "StatusCode" in payload
+        else payload.get("statusCode")
+    )
+    try:
+        status_code = int(raw_status) if raw_status is not None else 500
+    except (TypeError, ValueError):
+        status_code = 500
+    msg = str(payload.get("message") or f"EDINET JSON StatusCode {status_code}")
+    return status_code, msg
+
+
 def download_xbrl_with_retry(
     doc_id: str, api_key: str
 ) -> tuple[bytes | None, bytes | None, bytes | None]:
     """
     EDINET API から XBRL ZIP をダウンロードし、xbrl / lab / def を抽出する。
-    500/503 等の一時エラーには指数バックオフでリトライする。
+    429/5xx 等の一時エラーには指数バックオフでリトライし、恒久/認証エラーは例外を送出する。
     """
     url = EDINET_API_DOC_URL.format(doc_id=doc_id, api_key=api_key)
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = http_requests.get(url, timeout=60)
+            err = _extract_error_response(resp)
+            if err is not None:
+                status_code, msg = err
+                if status_code == 404:
+                    logger.info("  No document/XBRL found (404) for %s.", doc_id)
+                    return None, None, None
+                if status_code in RETRYABLE_STATUS_CODES:
+                    if attempt < MAX_RETRIES:
+                        wait = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
+                        logger.warning(
+                            "  EDINET API returned %d for %s (%s, attempt %d/%d). Retrying in %ds...",
+                            status_code,
+                            doc_id,
+                            msg,
+                            attempt,
+                            MAX_RETRIES,
+                            wait,
+                        )
+                        time.sleep(wait)
+                        continue
+                    raise RuntimeError(
+                        f"EDINET API returned {status_code} for {doc_id} after {MAX_RETRIES} attempts: {msg}"
+                    )
+                raise RuntimeError(
+                    f"EDINET API returned {status_code} for {doc_id}: {msg}"
+                )
 
-            if resp.status_code in RETRYABLE_STATUS_CODES:
+            try:
+                return extract_files_from_zip_bytes(resp.content)
+            except zipfile.BadZipFile as e:
+                raise RuntimeError(
+                    f"Downloaded file for {doc_id} is not a valid ZIP"
+                ) from e
+
+        except http_requests.exceptions.RequestException as e:
+            if attempt < MAX_RETRIES:
                 wait = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
                 logger.warning(
-                    "  EDINET API returned %d for %s (attempt %d/%d). Retrying in %ds...",
-                    resp.status_code,
+                    "  Network error for %s (attempt %d/%d): %s. Retrying in %ds...",
                     doc_id,
                     attempt,
                     MAX_RETRIES,
+                    str(e),
                     wait,
                 )
                 time.sleep(wait)
                 continue
+            raise RuntimeError(
+                f"Network error for {doc_id} after {MAX_RETRIES} attempts: {e}"
+            ) from e
 
-            if resp.status_code != 200:
-                logger.error(
-                    "  EDINET API returned %d for %s (non-retryable). Skipping.",
-                    resp.status_code,
-                    doc_id,
-                )
-                return None, None, None
-
-            try:
-                return extract_files_from_zip_bytes(resp.content)
-            except zipfile.BadZipFile:
-                logger.warning(
-                    "  Downloaded file for %s is not a valid ZIP. Skipping.",
-                    doc_id,
-                )
-                return None, None, None
-
-        except http_requests.exceptions.RequestException as e:
-            wait = RETRY_BACKOFF_BASE * (2 ** (attempt - 1))
-            logger.warning(
-                "  Network error for %s (attempt %d/%d): %s. Retrying in %ds...",
-                doc_id,
-                attempt,
-                MAX_RETRIES,
-                str(e),
-                wait,
-            )
-            time.sleep(wait)
-
-    logger.error(
-        "  All %d retries exhausted for %s. Skipping.", MAX_RETRIES, doc_id
-    )
-    return None, None, None
+    raise RuntimeError(f"All {MAX_RETRIES} retries exhausted for {doc_id}")
 
 
 def parse_num(val: Any):

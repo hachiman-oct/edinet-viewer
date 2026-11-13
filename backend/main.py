@@ -253,6 +253,21 @@ async def api_import_edinet_codelist(request: Request):
     if not rows_by_code:
         return {"imported": 0, "message": "No valid rows found in CSV."}
 
+    metadata_cols = (
+        "ticker_symbol",
+        "company_name_ja",
+        "company_name_en",
+        "industry",
+        "jcn",
+    )
+    diff_condition = " OR ".join(
+        f"(S.{col} IS NOT NULL AND IFNULL(T.{col}, '') != S.{col})"
+        for col in metadata_cols
+    )
+    set_clauses = ",\n        ".join(
+        f"{col} = COALESCE(S.{col}, T.{col})" for col in metadata_cols
+    )
+
     rows = list(rows_by_code.values())
     json_data = json.dumps(rows)
     query = f"""
@@ -268,12 +283,9 @@ async def api_import_edinet_codelist(request: Request):
       FROM UNNEST(JSON_QUERY_ARRAY(@json_str)) AS j
     ) S
     ON T.edinet_code = S.edinet_code
-    WHEN MATCHED AND (IFNULL(T.ticker_symbol, '') != IFNULL(S.ticker_symbol, '')
-                      OR IFNULL(T.company_name_en, '') != IFNULL(S.company_name_en, '')) THEN
+    WHEN MATCHED AND ({diff_condition}) THEN
       UPDATE SET
-        ticker_symbol = COALESCE(S.ticker_symbol, T.ticker_symbol),
-        company_name_en = COALESCE(S.company_name_en, T.company_name_en),
-        industry = COALESCE(S.industry, T.industry),
+        {set_clauses},
         last_modified = CURRENT_TIMESTAMP()
     """
 
