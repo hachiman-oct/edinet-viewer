@@ -219,7 +219,14 @@ export default function CompanyPage() {
                 className="space-y-6"
               >
                 {/* Company Header */}
-                <CompanyHeader company={data.company} />
+                <CompanyHeader
+                  company={data.company}
+                  docId={
+                    selectedFinancial?.doc_id ??
+                    data.financials[0]?.doc_id ??
+                    null
+                  }
+                />
 
                 {/* Fiscal Year Selector */}
                 {availableYears.length > 0 && (

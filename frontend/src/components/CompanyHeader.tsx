@@ -5,10 +5,21 @@ import type { CompanyInfo } from "@/types";
 
 interface CompanyHeaderProps {
   company: CompanyInfo;
+  docId?: string | null;
 }
 
-export default function CompanyHeader({ company }: CompanyHeaderProps) {
+export default function CompanyHeader({ company, docId }: CompanyHeaderProps) {
   const links = [
+    ...(docId
+      ? [
+          {
+            label: "EDINET",
+            href: `https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?${docId}`,
+            className:
+              "bg-amber-400/10 text-amber-300 hover:bg-amber-400/20",
+          },
+        ]
+      : []),
     ...(company.ticker_symbol
       ? [
           {
